@@ -2,8 +2,6 @@ plugins {
     id 'com.android.application'
 }
 
-def keystoreFile = rootProject.file("nova-signing.jks")
-
 android {
     namespace 'com.example.testandroidapp'
     compileSdk 34
@@ -16,28 +14,10 @@ android {
         versionName "1.0"
     }
 
-    signingConfigs {
-        release {
-            if (keystoreFile.exists()) {
-                storeFile keystoreFile
-                storePassword System.getenv("KEYSTORE_PASSWORD") ?: ""
-                keyAlias "nova"
-                keyPassword System.getenv("KEY_PASSWORD") ?: ""
-            } else {
-                // Fallback to debug keystore if nova-signing.jks is not found
-                storeFile file("${System.getProperty('user.home')}/.android/debug.keystore")
-                storePassword "android"
-                keyAlias "androiddebugkey"
-                keyPassword "android"
-            }
-        }
-    }
-
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
         }
     }
 

@@ -226,37 +226,52 @@ jobs:
           fi
           echo "::endgroup::"
 
+      - name: Setup Android SDK
+        if: steps.detect.outputs.PROJECT_TYPE == 'android'
+        uses: android-actions/setup-android@v3
+
       - name: Build Android APK
         if: steps.detect.outputs.PROJECT_TYPE == 'android'
+        shell: bash
         run: |
+          set -o pipefail
           echo "::group::Build Android APK"
           cd workspace/${{ steps.detect.outputs.PROJECT_ROOT }}
           
           chmod +x gradlew 2>/dev/null || true
           
-          # If gradlew exists, use it; otherwise install gradle
-          if [ -f "gradlew" ]; then
+          BUILD_SUCCEEDED=false
+          
+          # Strategy 1: try gradlew (with wrapper jar)
+          if [ -f "gradlew" ] && [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
             echo "Using project's Gradle wrapper"
-            ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tail -50
-          else
-            echo "No Gradle wrapper found, installing Gradle 8.4"
+            if ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tail -80; then
+              BUILD_SUCCEEDED=true
+            else
+              echo "Gradle wrapper failed, trying fallback..."
+            fi
+          fi
+          
+          # Strategy 2: install Gradle directly
+          if [ "$BUILD_SUCCEEDED" = "false" ]; then
+            echo "Installing Gradle 8.4 directly"
             wget -q https://services.gradle.org/distributions/gradle-8.4-bin.zip
             unzip -q gradle-8.4-bin.zip
             export PATH="$PWD/gradle-8.4/bin:$PATH"
-            gradle assembleRelease --no-daemon --stacktrace 2>&1 | tail -50
+            gradle assembleRelease --no-daemon --stacktrace 2>&1 | tail -80
           fi
           
           # Find the generated APK
           echo "::endgroup::"
           echo "::group::Locate APK"
-          find . -name "*.apk" -path "*/release/*" 2>/dev/null || \
-          find . -name "*-release.apk" 2>/dev/null || \
           find . -name "*.apk" 2>/dev/null
           echo "::endgroup::"
 
       - name: Build Flutter APK
         if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
+        shell: bash
         run: |
+          set -o pipefail
           echo "::group::Build Flutter APK"
           cd workspace/${{ steps.detect.outputs.PROJECT_ROOT }}
           
