@@ -461,12 +461,12 @@ jobs:
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
           RELEASE_ID="${{ inputs.release_id }}"
           
-          # Upload the signed APK
-          curl -X POST \
+          # Upload the signed APK (must use uploads.github.com)
+          curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/octet-stream" \
             --data-binary "@$APK" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=${{ steps.locate.outputs.APK_NAME }}"
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=${{ steps.locate.outputs.APK_NAME }}"
           
           echo "APK uploaded: ${{ steps.locate.outputs.APK_NAME }}"
           echo "::endgroup::"
@@ -479,18 +479,18 @@ jobs:
           RELEASE_ID="${{ inputs.release_id }}"
           
           # Upload keystore
-          curl -X POST \
+          curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/octet-stream" \
             --data-binary "@$RUNNER_TEMP/nova-signing.jks" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=nova-signing.jks"
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=nova-signing.jks"
           
           # Upload key properties
-          curl -X POST \
+          curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: text/plain" \
             --data-binary "@$RUNNER_TEMP/keystore-properties.txt" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=keystore-properties.txt"
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=keystore-properties.txt"
           
           echo "Signing key uploaded"
 
