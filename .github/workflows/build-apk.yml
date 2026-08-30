@@ -239,14 +239,19 @@ jobs:
             fi
           fi
 
-          # Patch NDK if hardcoded to 26.x (incompatible on GitHub runners)
+          # Patch NDK if hardcoded (NDK 26.x causes OOM on GitHub runners)
           APP_BUILD="android/app/build.gradle"
           if [ -f "$APP_BUILD" ]; then
-            if grep -q 'ndkVersion.*"26\.' "$APP_BUILD"; then
-              echo "Patching hardcoded NDK 26.x"
-              sed -i 's|ndkVersion = .*|// ndkVersion managed by Flutter|' "$APP_BUILD"
+            # Remove any hardcoded ndkVersion lines entirely
+            if grep -q 'ndkVersion' "$APP_BUILD"; then
+              echo "Removing hardcoded ndkVersion to prevent OOM"
+              sed -i '/^[[:space:]]*ndkVersion/d' "$APP_BUILD"
             fi
           fi
+
+          # Add gradle.properties to limit memory
+          echo 'org.gradle.jvmargs=-Xmx3g' >> android/gradle.properties
+          echo 'android.useAndroidX=true' >> android/gradle.properties
 
           # Get dependencies
           echo "--- flutter pub get ---"
