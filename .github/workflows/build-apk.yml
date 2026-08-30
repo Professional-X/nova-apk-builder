@@ -494,6 +494,39 @@ jobs:
           
           echo "Signing key uploaded"
 
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_ID="${{ inputs.release_id }}"
+          SIGNING_MODE="${{ inputs.signing_mode }}"
+          APK_NAME="${{ steps.locate.outputs.APK_NAME }}"
+          APK_SIZE="${{ steps.locate.outputs.APK_SIZE }}"
+          
+          BODY="APK build succeeded.
+
+"
+          BODY+="- Project: ${{ steps.detect.outputs.PROJECT_TYPE }}
+"
+          BODY+="- APK: $APK_NAME ($APK_SIZE bytes)
+"
+          BODY+="- Signing: $SIGNING_MODE
+"
+          
+          if [ "$SIGNING_MODE" = "generate" ]; then
+            BODY+="
+⚠ Save the signing key assets (nova-signing.jks and keystore-properties.txt) for future app updates.
+"
+          fi
+          
+          curl -s -X PATCH \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"draft\":false,\"body":$(echo "$BODY" | jq -Rs .)}" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/releases/$RELEASE_ID"
+          
+          echo "Release published"
+
       - name: Build summary
         if: always()
         run: |

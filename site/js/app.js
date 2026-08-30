@@ -211,16 +211,6 @@ async function onBuildSuccess(run) {
     html += '</div>';
     showResultHTML(html);
 
-    // Update release to non-draft
-    await GitHubAPI.updateRelease(buildReleaseId, {
-      draft: false,
-      body: 'APK build succeeded.
-
-' +
-        (apk ? 'APK: ' + apk.name + '\n' : '') +
-        (signingMode === 'generate' ? '\n⚠ Save the signing key assets for future updates.' : '')
-    });
-
   } catch (err) {
     showResult('error', 'APK Ready but download failed', err.message);
   }
