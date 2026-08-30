@@ -397,8 +397,7 @@ jobs:
           # Copy signed APK back
           cp "$SIGNED_APK" "$APK"
           
-          # Save keystore for download
-          cp "$KEYSTORE_PATH" "$RUNNER_TEMP/nova-signing.jks"
+          # Keystore is already at $RUNNER_TEMP/nova-signing.jks for upload
           
           # Save keystore properties
           cat > "$RUNNER_TEMP/keystore-properties.txt" << EOF
