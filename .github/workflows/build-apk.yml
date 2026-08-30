@@ -249,9 +249,15 @@ jobs:
             fi
           fi
 
-          # Add gradle.properties to limit memory
+          # Add gradle.properties to limit memory and enable AndroidX migration
           echo 'org.gradle.jvmargs=-Xmx3g' >> android/gradle.properties
           echo 'android.useAndroidX=true' >> android/gradle.properties
+          echo 'android.enableJetifier=true' >> android/gradle.properties
+
+          # Fix old android.support dependency references
+          if [ -f "$APP_BUILD" ]; then
+            sed -i 's|com.android.support:multidex|androidx.multidex:multidex|g' "$APP_BUILD"
+          fi
 
           # Get dependencies
           echo "--- flutter pub get ---"
