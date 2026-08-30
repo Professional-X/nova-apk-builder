@@ -170,7 +170,7 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Setup Android SDK
-        if: steps.detect.outputs.PROJECT_TYPE == 'android'
+        if: steps.detect.outputs.PROJECT_TYPE == 'android' || steps.detect.outputs.PROJECT_TYPE == 'flutter'
         uses: android-actions/setup-android@v3
 
       - name: Build Android APK
