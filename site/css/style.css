@@ -33,10 +33,15 @@ header p{
 }
 .hidden{display:none !important;}
 
+/* Status messages */
+.status-ok{color:#3fb950;}
+.status-error{color:#f85149;}
+
 /* Buttons */
 button{
   display:block;width:100%;padding:14px 24px;font-size:1.05rem;font-weight:600;
   border:none;border-radius:10px;cursor:pointer;transition:all .15s;
+  font-family:inherit;
 }
 #btn-connect,#btn-build{
   background:#238636;color:#fff;
@@ -46,6 +51,28 @@ button{
 }
 #btn-connect:disabled,#btn-build:disabled{
   background:#21262d;color:#484f58;cursor:not-allowed;
+}
+
+/* Download buttons (<a> tags styled as buttons) */
+.download-btn{
+  display:block;width:100%;padding:14px 24px;font-size:1rem;font-weight:600;
+  background:#238636;color:#fff;text-decoration:none;text-align:center;
+  margin-top:12px;border-radius:10px;transition:background .15s;
+}
+.download-btn:hover{
+  background:#2ea043;color:#fff;text-decoration:none;
+}
+.download-btn-secondary{
+  background:#21262d;border:1px solid #30363d;color:#58a6ff;font-weight:500;
+}
+.download-btn-secondary:hover{
+  background:#30363d;border-color:#58a6ff;color:#58a6ff;
+}
+.link-btn{
+  display:inline-block;margin-top:16px;color:#58a6ff;text-decoration:none;font-size:0.9rem;
+}
+.link-btn:hover{
+  text-decoration:underline;color:#79c0ff;
 }
 
 /* Drop Zone */
@@ -86,15 +113,33 @@ button{
 .radio-option strong{color:#c9d1d9;}
 .radio-option small{color:#8b949e;}
 
-/* Progress */
+/* Progress Steps */
 .progress-step{
   display:flex;align-items:center;gap:10px;padding:8px 0;
-  font-size:0.9rem;color:#8b949e;
+  font-size:0.9rem;color:#484f58;
+  transition:color .2s;
 }
-.progress-step .icon{width:20px;text-align:center;flex-shrink:0;}
+.progress-step .step-icon{
+  width:20px;height:20px;flex-shrink:0;border-radius:50%;
+  border:2px solid #30363d;position:relative;
+  transition:border-color .2s, background .2s;
+}
+.progress-step .step-icon::after{
+  content:'';position:absolute;top:50%;left:50%;width:8px;height:8px;
+  border-radius:50%;background:#30363d;
+  transform:translate(-50%,-50%);transition:background .2s;
+}
 .progress-step.done{color:#3fb950;}
+.progress-step.done .step-icon{border-color:#3fb950;background:#3fb950;}
+.progress-step.done .step-icon::after{background:#fff;content:'';display:block;width:6px;height:6px;}
 .progress-step.active{color:#58a6ff;}
+.progress-step.active .step-icon{border-color:#58a6ff;}
+.progress-step.active .step-icon::after{background:#58a6ff;}
 .progress-step.error{color:#f85149;}
+.progress-step.error .step-icon{border-color:#f85149;}
+.progress-step.error .step-icon::after{background:#f85149;}
+.progress-step .step-text{line-height:1.4;}
+
 #progress-log{
   background:#0d1117;border:1px solid #30363d;border-radius:8px;
   padding:12px;font-size:0.8rem;color:#8b949e;max-height:300px;
@@ -103,21 +148,20 @@ button{
 
 /* Result */
 .result-success{color:#3fb950;}
+.result-success h2{color:#3fb950;margin-bottom:8px;}
 .result-error{color:#f85149;}
-.download-btn{
-  background:#238636;color:#fff;text-decoration:none;text-align:center;
-  margin-top:12px;display:block;
+.result-error h2{color:#f85149;margin-bottom:8px;}
+.result-error p{color:#f85149;margin-bottom:12px;}
+.result-error ul{
+  color:#c9d1d9;margin:0 0 16px 20px;line-height:1.8;font-size:0.9rem;
 }
-.download-btn:hover{background:#2ea043;}
+.result-error code{
+  background:#21262d;padding:2px 6px;border-radius:4px;font-size:0.85rem;color:#f85149;
+}
 .warning-box{
   background:#1c1508;border:1px solid #9e6a03;border-radius:8px;
   padding:12px;margin-top:12px;font-size:0.85rem;color:#d29922;line-height:1.5;
 }
-.key-download{
-  background:#0d1117;border:1px solid #30363d;border-radius:8px;
-  padding:12px;margin-top:8px;font-size:0.85rem;
-}
-.key-download a{color:#58a6ff;text-decoration:underline;}
 
 /* Token Input */
 .token-input-wrap{

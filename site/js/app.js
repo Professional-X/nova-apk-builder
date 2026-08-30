@@ -1,11 +1,13 @@
 // =============================================================
-// Main application logic
+// Main application logic — Nova APK Builder
 // =============================================================
 
 let selectedFile = null;
 let buildReleaseId = null;
 let pollTimer = null;
 let buildStartTime = 0;
+let consecutiveErrors = 0;
+const MAX_CONSECUTIVE_ERRORS = 5;
 
 // ---- Auth helpers ----
 function getToken() {
@@ -28,60 +30,88 @@ async function connectWithToken() {
   const token = tokenInput.value.trim();
 
   if (!token) {
-    statusEl.innerHTML = '<span style="color:#f85149">Please paste your GitHub token above.</span>';
+    statusEl.innerHTML = '<span class="status-error">Please paste your GitHub token above.</span>';
     return;
   }
 
   btn.disabled = true;
-  btn.textContent = 'Verifying…';
+  btn.textContent = 'Verifying...';
   statusEl.innerHTML = '';
 
   try {
-    // Verify token by fetching user info
-    const resp = await fetch('https://api.github.com/user', {
-      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.message || 'Token invalid or expired (HTTP ' + resp.status + ')');
+    // Step 1: Verify token by fetching user info
+    let resp;
+    try {
+      resp = await fetch('https://api.github.com/user', {
+        headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
+      });
+    } catch (networkErr) {
+      throw new Error('Network error — check your internet connection and try again.');
     }
+
+    if (!resp.ok) {
+      if (resp.status === 401) {
+        throw new Error('Token is invalid or expired. Create a new one at github.com/settings/tokens');
+      }
+      if (resp.status === 403) {
+        throw new Error('Token is blocked or rate-limited. Try again in a minute or use a different token.');
+      }
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.message || 'Token verification failed (HTTP ' + resp.status + ')');
+    }
+
     const user = await resp.json();
 
-    // Check if the user has access to the target repo
-    const repoResp = await fetch('https://api.github.com/repos/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO + '/actions/workflows', {
-      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
-    });
-    if (!repoResp.ok) {
-      throw new Error('Token works but lacks access to ' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO + '. Make sure your token has the <strong>repo</strong> scope and you have access to the repository.');
+    // Step 2: Check if the user can access the target repo
+    try {
+      const repoResp = await fetch(
+        'https://api.github.com/repos/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO,
+        {
+          headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
+        }
+      );
+      if (!repoResp.ok) {
+        if (repoResp.status === 404) {
+          throw new Error('Repository ' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO + ' not found or you don\'t have access. Make sure your token has the <b>repo</b> scope.');
+        }
+        if (repoResp.status === 403) {
+          throw new Error('Your token lacks permission. Re-create it with the <b>repo</b> scope checked.');
+        }
+        throw new Error('Cannot access repository (HTTP ' + repoResp.status + '). Ensure your token has <b>repo</b> scope.');
+      }
+    } catch (e) {
+      // Re-throw our custom errors, wrap network errors
+      if (e.message && (e.message.includes('scope') || e.message.includes('not found') || e.message.includes('permission'))) {
+        throw e;
+      }
+      throw new Error('Network error while checking repository. Check your connection and try again.');
     }
 
-    // Save token
+    // Success — save token and show build UI
     sessionStorage.setItem('gh_token', token);
-    statusEl.innerHTML = '<span style="color:#3fb950">✓ Connected as ' + escHtml(user.login) + '</span>';
-    btn.textContent = '✓ Connected';
+    statusEl.innerHTML = '<span class="status-ok">Connected as ' + escHtml(user.login) + '</span>';
+    btn.textContent = 'Connected';
+    btn.disabled = true;
     tokenInput.value = '';
 
-    setTimeout(() => showBuildUI(), 500);
+    setTimeout(function() { showBuildUI(); }, 400);
 
   } catch (err) {
-    statusEl.innerHTML = '<span style="color:#f85149">' + err.message + '</span>';
+    statusEl.innerHTML = '<span class="status-error">' + err.message + '</span>';
     btn.disabled = false;
     btn.textContent = 'Connect';
   }
 }
 
-function logout() {
+function disconnect() {
   sessionStorage.removeItem('gh_token');
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   location.reload();
 }
 
 // ---- Init ----
 (function init() {
   if (isLoggedIn()) {
-    document.getElementById('btn-connect').textContent = '✓ Connected';
-    document.getElementById('btn-connect').disabled = true;
-    document.getElementById('token-input').style.display = 'none';
-    document.querySelector('.token-input-wrap').style.display = 'none';
     showBuildUI();
   }
 
@@ -91,11 +121,11 @@ function logout() {
   });
 
   // Drag-and-drop
-  const dz = document.getElementById('drop-zone');
-  dz.addEventListener('click', () => document.getElementById('file-input').click());
-  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-  dz.addEventListener('drop', e => {
+  var dz = document.getElementById('drop-zone');
+  dz.addEventListener('click', function() { document.getElementById('file-input').click(); });
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', function() { dz.classList.remove('dragover'); });
+  dz.addEventListener('drop', function(e) {
     e.preventDefault();
     dz.classList.remove('dragover');
     if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
@@ -116,11 +146,11 @@ function handleFileSelect(event) {
 }
 
 function handleFile(file) {
-  if (!file.name.endsWith('.zip')) {
+  if (!file.name.toLowerCase().endsWith('.zip')) {
     alert('Please select a .zip file.');
     return;
   }
-  const maxBytes = CONFIG.MAX_ZIP_MB * 1024 * 1024;
+  var maxBytes = CONFIG.MAX_ZIP_MB * 1024 * 1024;
   if (file.size > maxBytes) {
     alert('File is too large. Maximum size is ' + CONFIG.MAX_ZIP_MB + ' MB.');
     return;
@@ -141,58 +171,98 @@ function formatBytes(b) {
 // ---- Start build ----
 async function startBuild() {
   if (!selectedFile) { alert('Please select a ZIP file first.'); return; }
+  if (!getToken()) {
+    alert('Your session expired. Please refresh the page and re-enter your token.');
+    return;
+  }
 
-  const signingMode = document.querySelector('input[name="signing"]:checked').value;
-  const btnBuild = document.getElementById('btn-build');
+  var signingMode = document.querySelector('input[name="signing"]:checked').value;
+  var btnBuild = document.getElementById('btn-build');
   btnBuild.disabled = true;
-  btnBuild.textContent = 'Uploading…';
+  btnBuild.textContent = 'Working...';
+
+  // Reset progress
+  document.getElementById('progress-steps').innerHTML = '';
+  document.getElementById('progress-log').textContent = '';
+  consecutiveErrors = 0;
 
   showSection('step-progress');
-  setProgressTitle('🔨 Uploading ZIP…');
-  addStep('✓', 'ZIP uploaded', 'pending');
-  addStep('⏳', 'Triggering build…', 'active');
+  setProgressTitle('Starting build...');
+  addStep('pending', 'Uploading ZIP to GitHub...');
+  addStep('pending', 'Triggering build workflow...');
+  addStep('pending', 'Building APK...');
+  addStep('pending', 'Signing APK...');
+  addStep('pending', 'Preparing download...');
+
+  updateStep(0, 'active', 'Uploading ZIP to GitHub...');
 
   try {
-    const { releaseId } = await GitHubAPI.uploadZip(selectedFile);
-    buildReleaseId = releaseId;
-    updateStep(0, '✓', 'ZIP uploaded', 'done');
+    // Upload
+    var uploadResult = await GitHubAPI.uploadZip(selectedFile);
+    buildReleaseId = uploadResult.releaseId;
+    updateStep(0, 'done', 'ZIP uploaded (' + formatBytes(selectedFile.size) + ')');
 
-    await GitHubAPI.triggerBuild(releaseId, signingMode);
-    updateStep(1, '✓', 'Build triggered', 'done');
-    addStep('⏳', 'Preparing build environment…', 'active');
+    // Trigger
+    updateStep(1, 'active', 'Triggering build workflow...');
+    await GitHubAPI.triggerBuild(uploadResult.releaseId, signingMode);
+    updateStep(1, 'done', 'Build triggered successfully');
 
-    await sleep(3000);
+    // Start polling
+    updateStep(2, 'active', 'Waiting for build to start...');
     buildStartTime = Date.now();
+    await sleep(3000);
     pollBuildStatus();
 
   } catch (err) {
-    showResult('error', 'Upload / trigger failed', err.message);
+    var failedAt = -1;
+    var steps = document.querySelectorAll('.progress-step');
+    for (var i = steps.length - 1; i >= 0; i--) {
+      if (steps[i].classList.contains('active')) { failedAt = i; break; }
+    }
+    if (failedAt >= 0) updateStep(failedAt, 'error', steps[failedAt].querySelector('.step-text').textContent + ' — failed');
+    showResult('error', 'Build could not be started', err.message);
   }
 }
 
 // ---- Poll build ----
 async function pollBuildStatus() {
-  const elapsed = Date.now() - buildStartTime;
+  var elapsed = Date.now() - buildStartTime;
   if (elapsed > CONFIG.BUILD_TIMEOUT_MS) {
     showResult('error', 'Build timed out',
-      'The build took longer than 30 minutes. Check GitHub Actions for details.');
+      'The build took longer than ' + Math.round(CONFIG.BUILD_TIMEOUT_MS / 60000) + ' minutes. Check GitHub Actions for details.');
     return;
   }
 
   try {
-    const run = await GitHubAPI.getLatestRun();
+    var run = await GitHubAPI.getLatestRun();
+    consecutiveErrors = 0; // Reset on success
+
     if (!run) {
+      updateStep(2, 'active', 'Waiting for build to start...');
       pollTimer = setTimeout(pollBuildStatus, CONFIG.POLL_INTERVAL_MS);
       return;
     }
 
-    const status = run.status;
-    const conclusion = run.conclusion;
+    var status = run.status;
+    var conclusion = run.conclusion;
 
-    updateProgressFromRun(run);
+    // Update progress based on status
+    if (status === 'queued') {
+      setProgressTitle('Queued — waiting for a runner...');
+      updateStep(2, 'active', 'Waiting for GitHub Actions runner...');
+    } else if (status === 'in_progress') {
+      setProgressTitle('Building APK...');
+      updateStep(2, 'done', 'Build environment ready');
+      updateStep(3, 'active', 'Compiling your project...');
+      updateStep(4, 'active', 'Signing APK...');
+    }
 
     if (status === 'completed') {
       if (conclusion === 'success') {
+        updateStep(2, 'done', 'Build environment ready');
+        updateStep(3, 'done', 'Project compiled successfully');
+        updateStep(4, 'done', 'APK signed');
+        updateStep(5, 'active', 'Preparing download links...');
         await onBuildSuccess(run);
       } else {
         await onBuildFailure(run);
@@ -201,102 +271,107 @@ async function pollBuildStatus() {
     }
 
     pollTimer = setTimeout(pollBuildStatus, CONFIG.POLL_INTERVAL_MS);
+
   } catch (err) {
+    consecutiveErrors++;
+    console.warn('Poll error (' + consecutiveErrors + '):', err.message);
+
+    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      showResult('error', 'Lost connection to GitHub',
+        'Failed to check build status ' + MAX_CONSECUTIVE_ERRORS + ' times in a row. ' +
+        'Check your internet connection, then refresh the page. Your build may still be running on GitHub.');
+      return;
+    }
+
+    // Show a subtle warning but keep polling
+    var logEl = document.getElementById('progress-log');
+    logEl.textContent += '[Retry ' + consecutiveErrors + '/' + MAX_CONSECUTIVE_ERRORS + '] ' + err.message + '\n';
+    document.getElementById('progress-details').classList.remove('hidden');
+
     pollTimer = setTimeout(pollBuildStatus, CONFIG.POLL_INTERVAL_MS);
-  }
-}
-
-function updateProgressFromRun(run) {
-  const status = run.status;
-
-  if (status === 'queued') {
-    setProgressTitle('🔨 Queued…');
-    ensureStep(2, '⏳', 'Waiting for runner…', 'active');
-  } else if (status === 'in_progress') {
-    setProgressTitle('🔨 Building APK…');
-    ensureStep(2, '✓', 'Build environment ready', 'done');
-    ensureStep(3, '⏳', 'Compiling APK…', 'active');
-  }
-}
-
-function ensureStep(index, icon, text, cls) {
-  const steps = document.querySelectorAll('.progress-step');
-  if (steps[index]) {
-    steps[index].className = 'progress-step ' + cls;
-    steps[index].innerHTML = '<span class="icon">' + icon + '</span><span>' + text + '</span>';
-  } else {
-    addStep(icon, text, cls);
   }
 }
 
 // ---- Build success ----
 async function onBuildSuccess(run) {
-  setProgressTitle('🎉 APK Ready!');
-  ensureStep(2, '✓', 'Build environment ready', 'done');
-  ensureStep(3, '✓', 'APK compiled', 'done');
-  ensureStep(4, '✓', 'APK signed', 'done');
-  ensureStep(5, '✓', 'APK uploaded', 'done');
+  setProgressTitle('APK Ready!');
+  updateStep(5, 'done', 'All done!');
 
   try {
-    const assets = await GitHubAPI.getReleaseAssets(buildReleaseId);
-    const apk = assets.find(a => a.name.endsWith('.apk'));
-    const keystore = assets.find(a => a.name.endsWith('.jks') || a.name.endsWith('.keystore'));
-    const properties = assets.find(a => a.name === 'keystore-properties.txt');
+    var assets = await GitHubAPI.getReleaseAssets(buildReleaseId);
+    var apk = null;
+    var keystore = null;
+    var properties = null;
 
-    let html = '<div class="result-success">';
-    html += '<h2>🎉 APK Ready!</h2>';
-    html += '<p>Build: <strong>' + escHtml(run.name || run.display_title || 'Build') + '</strong></p>';
-    html += '<p>Signing: <strong>Release</strong></p>';
+    for (var i = 0; i < assets.length; i++) {
+      var name = assets[i].name;
+      if (name.endsWith('.apk')) apk = assets[i];
+      else if (name.endsWith('.jks') || name.endsWith('.keystore')) keystore = assets[i];
+      else if (name === 'keystore-properties.txt') properties = assets[i];
+    }
+
+    var html = '<div class="result-success">';
+    html += '<h2>APK Ready!</h2>';
+    html += '<p>Build completed successfully.</p>';
 
     if (apk) {
-      html += '<a class="download-btn" href="' + apk.browser_download_url + '" download>📱 Download ' + escHtml(apk.name) + '</a>';
+      html += '<a class="download-btn" href="' + escAttr(apk.browser_download_url) + '" download>Download ' + escHtml(apk.name) + ' (' + formatBytes(apk.size) + ')</a>';
+    } else {
+      html += '<p class="status-error">APK file not found in release assets. Check the release on GitHub.</p>';
     }
 
-    const signingMode = document.querySelector('input[name="signing"]:checked')?.value || 'generate';
-    if (signingMode === 'generate') {
-      html += '<div class="warning-box">';
-      html += '⚠ <strong>Save your signing key!</strong><br>';
-      html += 'You need the same key for future app updates. ';
-      html += 'If you lose it, users won\'t be able to install updates.';
-      html += '</div>';
-      if (keystore) {
-        html += '<div class="key-download">';
-        html += '🔐 <a href="' + keystore.browser_download_url + '" download>Download Keystore</a>';
+    var signingMode = document.querySelector('input[name="signing"]:checked');
+    if (signingMode && signingMode.value === 'generate') {
+      if (keystore || properties) {
+        html += '<div class="warning-box">';
+        html += 'Save your signing key! You need the same key for future app updates.';
         html += '</div>';
+      }
+      if (keystore) {
+        html += '<a class="download-btn download-btn-secondary" href="' + escAttr(keystore.browser_download_url) + '" download>Download Keystore</a>';
       }
       if (properties) {
-        html += '<div class="key-download">';
-        html += '📋 <a href="' + properties.browser_download_url + '" download>Download Key Properties</a>';
-        html += '</div>';
+        html += '<a class="download-btn download-btn-secondary" href="' + escAttr(properties.browser_download_url) + '" download>Download Key Properties</a>';
       }
     }
 
+    html += '<a class="link-btn" href="' + escAttr(run.html_url) + '" target="_blank" rel="noopener">View Build Details on GitHub</a>';
     html += '</div>';
     showResultHTML(html);
 
   } catch (err) {
-    showResult('error', 'APK Ready but download failed', err.message);
+    // Build succeeded but we couldn't get download links
+    var html2 = '<div class="result-success">';
+    html2 += '<h2>APK Ready!</h2>';
+    html2 += '<p>Build completed but download links could not be loaded.</p>';
+    html2 += '<a class="link-btn" href="' + escAttr(run.html_url) + '" target="_blank" rel="noopener">View Release on GitHub to download</a>';
+    html2 += '</div>';
+    showResultHTML(html2);
   }
 }
 
 // ---- Build failure ----
 async function onBuildFailure(run) {
-  setProgressTitle('❌ Build Failed');
-  ensureStep(2, '✗', 'Build failed', 'error');
+  updateStep(2, 'error', 'Build failed');
+  setProgressTitle('Build Failed');
 
-  let html = '<div class="result-error">';
-  html += '<h2>❌ Build Failed</h2>';
-  html += '<p>The project could not be compiled.</p>';
-  html += '<a class="download-btn" href="' + run.html_url + '" target="_blank" rel="noopener">View Details on GitHub</a>';
+  var html = '<div class="result-error">';
+  html += '<h2>Build Failed</h2>';
+  html += '<p>Your project could not be compiled. Common causes:</p>';
+  html += '<ul>';
+  html += '<li>Missing or incorrect <code>build.gradle</code> configuration</li>';
+  html += '<li>Missing dependencies or SDK components</li>';
+  html += '<li>Source code errors in your project</li>';
+  html += '</ul>';
+  html += '<a class="link-btn" href="' + escAttr(run.html_url) + '" target="_blank" rel="noopener">View Build Logs on GitHub</a>';
   html += '</div>';
   showResultHTML(html);
 }
 
 // ---- UI helpers ----
 function showSection(id) {
-  ['step-progress', 'step-result'].forEach(s =>
-    document.getElementById(s).classList.add('hidden')
-  );
+  document.getElementById('step-progress').classList.add('hidden');
+  document.getElementById('step-result').classList.add('hidden');
   document.getElementById(id).classList.remove('hidden');
 }
 
@@ -304,51 +379,56 @@ function setProgressTitle(t) {
   document.getElementById('progress-title').textContent = t;
 }
 
-function addStep(icon, text, cls) {
-  const div = document.createElement('div');
-  div.className = 'progress-step ' + (cls || '');
-  div.innerHTML = '<span class="icon">' + icon + '</span><span>' + text + '</span>';
+function addStep(cls, text) {
+  var div = document.createElement('div');
+  div.className = 'progress-step ' + (cls || 'pending');
+  div.innerHTML = '<span class="step-icon"></span><span class="step-text">' + escHtml(text) + '</span>';
   document.getElementById('progress-steps').appendChild(div);
 }
 
-function updateStep(index, icon, text, cls) {
-  const steps = document.querySelectorAll('.progress-step');
-  if (steps[index]) {
-    steps[index].className = 'progress-step ' + cls;
-    steps[index].innerHTML = '<span class="icon">' + icon + '</span><span>' + text + '</span>';
-  }
+function updateStep(index, cls, text) {
+  var steps = document.querySelectorAll('.progress-step');
+  if (!steps[index]) return;
+  steps[index].className = 'progress-step ' + cls;
+  var textEl = steps[index].querySelector('.step-text');
+  if (textEl) textEl.textContent = text;
 }
 
 function showResult(type, title, message) {
-  const cls = type === 'error' ? 'result-error' : 'result-success';
-  const icon = type === 'error' ? '❌' : '🎉';
+  var cls = type === 'error' ? 'result-error' : 'result-success';
   showResultHTML(
     '<div class="' + cls + '">' +
-    '<h2>' + icon + ' ' + escHtml(title) + '</h2>' +
+    '<h2>' + escHtml(title) + '</h2>' +
     '<p>' + escHtml(message) + '</p>' +
     '</div>'
   );
 }
 
 function showResultHTML(html) {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
   document.getElementById('step-progress').classList.add('hidden');
-  const rc = document.getElementById('result-content');
+  var rc = document.getElementById('result-content');
   rc.innerHTML = html;
   document.getElementById('step-result').classList.remove('hidden');
 
-  const btn = document.getElementById('btn-build');
+  // Reset build button
+  var btn = document.getElementById('btn-build');
   btn.disabled = false;
-  btn.textContent = '🔨 BUILD APK';
+  btn.textContent = 'BUILD APK';
   selectedFile = null;
   document.getElementById('drop-zone').classList.remove('hidden');
   document.getElementById('file-info').classList.add('hidden');
   document.getElementById('file-input').value = '';
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
 
 function escHtml(s) {
-  const d = document.createElement('div');
+  var d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function escAttr(s) {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

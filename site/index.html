@@ -4,25 +4,26 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Nova APK Builder</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
 <div id="app">
   <header>
-    <h1>🚀 Nova APK Builder</h1>
+    <h1>Nova APK Builder</h1>
     <p>Build a signed Android APK from Android or Flutter source code.</p>
   </header>
 
   <main>
     <!-- Step 1: Connect GitHub -->
     <section id="step-auth" class="step">
-      <h2>🔑 Enter GitHub Token</h2>
+      <h2>Enter GitHub Token</h2>
       <p>Paste your GitHub Personal Access Token to connect.</p>
-      <p class="hint">Your token stays in this browser only (sessionStorage). It is never sent anywhere except GitHub's API.</p>
+      <p class="hint">Your token stays in this browser only. It is never sent anywhere except GitHub's API.</p>
       <div class="token-input-wrap">
         <input type="password" id="token-input" placeholder="ghp_xxxxxxxxxxxx" autocomplete="off" spellcheck="false">
-        <button id="btn-toggle-token" onclick="toggleTokenVisibility()" title="Show/hide token">👁</button>
+        <button id="btn-toggle-token" onclick="toggleTokenVisibility()" title="Show/hide token">Show</button>
       </div>
       <button id="btn-connect" onclick="connectWithToken()">Connect</button>
       <div id="auth-status"></div>
@@ -41,12 +42,15 @@
 
     <!-- Step 2: Upload ZIP -->
     <section id="step-upload" class="step hidden">
-      <h2>📦 Upload Source Code</h2>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <h2 style="margin:0;">Upload Source Code</h2>
+        <button onclick="disconnect()" style="width:auto;padding:6px 14px;font-size:0.8rem;background:#21262d;border:1px solid #30363d;color:#8b949e;border-radius:6px;">Disconnect</button>
+      </div>
       <p>Select a .zip file containing your Android or Flutter project.</p>
 
       <div id="drop-zone" class="drop-zone">
         <div class="drop-zone-content">
-          <span class="drop-icon">📦</span>
+          <span class="drop-icon">[ZIP]</span>
           <span id="file-label">Tap to select your .zip file</span>
           <span class="hint">or drag and drop here</span>
         </div>
@@ -61,7 +65,7 @@
 
     <!-- Step 3: Signing -->
     <section id="step-signing" class="step hidden">
-      <h2>🔐 Signing</h2>
+      <h2>Signing</h2>
       <p>Choose how to sign your APK:</p>
       <label class="radio-option">
         <input type="radio" name="signing" value="generate" checked>
@@ -81,12 +85,12 @@
 
     <!-- Build Button -->
     <section id="step-build" class="step hidden">
-      <button id="btn-build" onclick="startBuild()">🔨 BUILD APK</button>
+      <button id="btn-build" onclick="startBuild()">BUILD APK</button>
     </section>
 
     <!-- Progress -->
     <section id="step-progress" class="step hidden">
-      <h2 id="progress-title">🔨 Building APK...</h2>
+      <h2 id="progress-title">Building APK...</h2>
       <div id="progress-steps"></div>
       <div id="progress-details" class="hidden">
         <details>
