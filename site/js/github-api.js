@@ -1,5 +1,5 @@
 // =============================================================
-// GitHub API helpers — all calls use the OAuth token from sessionStorage
+// GitHub API helpers — all calls use the token from sessionStorage
 // =============================================================
 
 const GitHubAPI = {
@@ -7,7 +7,7 @@ const GitHubAPI = {
   // ---- helpers ----
   _headers() {
     return {
-      'Authorization': 'Bearer ' + OAuth.getToken(),
+      'Authorization': 'Bearer ' + getToken(),
       'Accept': 'application/vnd.github+json',
       'Content-Type': 'application/json'
     };
@@ -46,7 +46,7 @@ const GitHubAPI = {
     const resp = await fetch(uploadUrl, {
       method: 'POST',
       headers: {
-        'Authorization': 'Bearer ' + OAuth.getToken(),
+        'Authorization': 'Bearer ' + getToken(),
         'Content-Type': 'application/zip'
       },
       body: file
@@ -88,7 +88,7 @@ const GitHubAPI = {
     try {
       const resp = await fetch(
         CONFIG.API_BASE + '/repos/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO + '/actions/runs/' + runId + '/logs',
-        { headers: { 'Authorization': 'Bearer ' + OAuth.getToken() } }
+        { headers: { 'Authorization': 'Bearer ' + getToken() } }
       );
       if (!resp.ok) return null;
       const blob = await resp.blob();

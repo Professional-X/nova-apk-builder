@@ -1,21 +1,10 @@
 // =============================================================
 // Nova APK Builder — Configuration
 // =============================================================
-// ONE-TIME SETUP REQUIRED:
-//   1. Go to https://github.com/settings/developers
-//   2. Click “New OAuth App”
-//   3. Application name:  Nova APK Builder
-//   4. Homepage URL:     https://professional-x.github.io/nova-apk-builder/
-//   5. Callback URL:     https://professional-x.github.io/nova-apk-builder/
-//   6. Click “Register application”
-//   7. Copy the “Client ID” shown at the top
-//   8. Replace the empty string below with that Client ID
-// =============================================================
 
 const CONFIG = {
   GITHUB_OWNER: 'Professional-X',
   GITHUB_REPO:  'nova-apk-builder',
-  OAUTH_CLIENT_ID: 'Ov23110ErDURA011z3x5',   // <-- Your OAuth App Client ID
   API_BASE: 'https://api.github.com',
   MAX_ZIP_MB: 100,
   POLL_INTERVAL_MS: 8000,

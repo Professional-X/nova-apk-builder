@@ -7,13 +7,88 @@ let buildReleaseId = null;
 let pollTimer = null;
 let buildStartTime = 0;
 
+// ---- Auth helpers ----
+function getToken() {
+  return sessionStorage.getItem('gh_token');
+}
+
+function isLoggedIn() {
+  return !!getToken();
+}
+
+function toggleTokenVisibility() {
+  const inp = document.getElementById('token-input');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+async function connectWithToken() {
+  const tokenInput = document.getElementById('token-input');
+  const statusEl = document.getElementById('auth-status');
+  const btn = document.getElementById('btn-connect');
+  const token = tokenInput.value.trim();
+
+  if (!token) {
+    statusEl.innerHTML = '<span style="color:#f85149">Please paste your GitHub token above.</span>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Verifying…';
+  statusEl.innerHTML = '';
+
+  try {
+    // Verify token by fetching user info
+    const resp = await fetch('https://api.github.com/user', {
+      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.message || 'Token invalid or expired (HTTP ' + resp.status + ')');
+    }
+    const user = await resp.json();
+
+    // Check if the user has access to the target repo
+    const repoResp = await fetch('https://api.github.com/repos/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO + '/actions/workflows', {
+      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
+    });
+    if (!repoResp.ok) {
+      throw new Error('Token works but lacks access to ' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO + '. Make sure your token has the <strong>repo</strong> scope and you have access to the repository.');
+    }
+
+    // Save token
+    sessionStorage.setItem('gh_token', token);
+    statusEl.innerHTML = '<span style="color:#3fb950">✓ Connected as ' + escHtml(user.login) + '</span>';
+    btn.textContent = '✓ Connected';
+    tokenInput.value = '';
+
+    setTimeout(() => showBuildUI(), 500);
+
+  } catch (err) {
+    statusEl.innerHTML = '<span style="color:#f85149">' + err.message + '</span>';
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+  }
+}
+
+function logout() {
+  sessionStorage.removeItem('gh_token');
+  location.reload();
+}
+
 // ---- Init ----
 (function init() {
-  if (OAuth.isLoggedIn()) {
-    document.getElementById('btn-connect').textContent = '✓ GitHub Connected';
+  if (isLoggedIn()) {
+    document.getElementById('btn-connect').textContent = '✓ Connected';
     document.getElementById('btn-connect').disabled = true;
+    document.getElementById('token-input').style.display = 'none';
+    document.querySelector('.token-input-wrap').style.display = 'none';
     showBuildUI();
   }
+
+  // Allow Enter key to connect
+  document.getElementById('token-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') connectWithToken();
+  });
 
   // Drag-and-drop
   const dz = document.getElementById('drop-zone');
@@ -78,17 +153,14 @@ async function startBuild() {
   addStep('⏳', 'Triggering build…', 'active');
 
   try {
-    // Upload ZIP
     const { releaseId } = await GitHubAPI.uploadZip(selectedFile);
     buildReleaseId = releaseId;
     updateStep(0, '✓', 'ZIP uploaded', 'done');
 
-    // Trigger workflow
     await GitHubAPI.triggerBuild(releaseId, signingMode);
     updateStep(1, '✓', 'Build triggered', 'done');
     addStep('⏳', 'Preparing build environment…', 'active');
 
-    // Wait a moment for GitHub to register the run
     await sleep(3000);
     buildStartTime = Date.now();
     pollBuildStatus();
@@ -114,10 +186,9 @@ async function pollBuildStatus() {
       return;
     }
 
-    const status = run.status;          // queued, in_progress, completed
-    const conclusion = run.conclusion;  // success, failure, cancelled, etc.
+    const status = run.status;
+    const conclusion = run.conclusion;
 
-    // Update progress steps based on status
     updateProgressFromRun(run);
 
     if (status === 'completed') {
@@ -131,17 +202,11 @@ async function pollBuildStatus() {
 
     pollTimer = setTimeout(pollBuildStatus, CONFIG.POLL_INTERVAL_MS);
   } catch (err) {
-    // Network glitch — retry
     pollTimer = setTimeout(pollBuildStatus, CONFIG.POLL_INTERVAL_MS);
   }
 }
 
 function updateProgressFromRun(run) {
-  // We infer progress from the workflow run status and any available jobs
-  const steps = document.querySelectorAll('.progress-step');
-  // steps[0] = ZIP uploaded, steps[1] = Build triggered (already done)
-  // We add dynamic steps based on status
-
   const status = run.status;
 
   if (status === 'queued') {
@@ -172,7 +237,6 @@ async function onBuildSuccess(run) {
   ensureStep(4, '✓', 'APK signed', 'done');
   ensureStep(5, '✓', 'APK uploaded', 'done');
 
-  // Find APK in release assets
   try {
     const assets = await GitHubAPI.getReleaseAssets(buildReleaseId);
     const apk = assets.find(a => a.name.endsWith('.apk'));
@@ -182,18 +246,17 @@ async function onBuildSuccess(run) {
     let html = '<div class="result-success">';
     html += '<h2>🎉 APK Ready!</h2>';
     html += '<p>Build: <strong>' + escHtml(run.name || run.display_title || 'Build') + '</strong></p>';
-    html += '<p>Status: <strong>Release</strong></p>';
+    html += '<p>Signing: <strong>Release</strong></p>';
 
     if (apk) {
       html += '<a class="download-btn" href="' + apk.browser_download_url + '" download>📱 Download ' + escHtml(apk.name) + '</a>';
     }
 
-    // Signing key warning
     const signingMode = document.querySelector('input[name="signing"]:checked')?.value || 'generate';
     if (signingMode === 'generate') {
       html += '<div class="warning-box">';
-      html += '⚠ <strong>Save your signing key!</strong><br>'; 
-      html += 'You need the same key for future app updates. '; 
+      html += '⚠ <strong>Save your signing key!</strong><br>';
+      html += 'You need the same key for future app updates. ';
       html += 'If you lose it, users won\'t be able to install updates.';
       html += '</div>';
       if (keystore) {
@@ -231,7 +294,7 @@ async function onBuildFailure(run) {
 
 // ---- UI helpers ----
 function showSection(id) {
-  ['step-progress', 'step-result'].forEach(s => 
+  ['step-progress', 'step-result'].forEach(s =>
     document.getElementById(s).classList.add('hidden')
   );
   document.getElementById(id).classList.remove('hidden');
@@ -273,7 +336,6 @@ function showResultHTML(html) {
   rc.innerHTML = html;
   document.getElementById('step-result').classList.remove('hidden');
 
-  // Reset build button
   const btn = document.getElementById('btn-build');
   btn.disabled = false;
   btn.textContent = '🔨 BUILD APK';
@@ -284,3 +346,9 @@ function showResultHTML(html) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}

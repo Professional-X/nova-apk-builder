@@ -17,11 +17,26 @@
   <main>
     <!-- Step 1: Connect GitHub -->
     <section id="step-auth" class="step">
-      <h2>🌐 Connect Your GitHub</h2>
-      <p>To build APKs, this app needs permission to use GitHub Actions in your repository.</p>
-      <p class="hint">You will be asked to authorize on GitHub. This is a one-time step.</p>
-      <button id="btn-connect" onclick="startOAuth()">Connect GitHub</button>
-      <div id="oauth-status"></div>
+      <h2>🔑 Enter GitHub Token</h2>
+      <p>Paste your GitHub Personal Access Token to connect.</p>
+      <p class="hint">Your token stays in this browser only (sessionStorage). It is never sent anywhere except GitHub's API.</p>
+      <div class="token-input-wrap">
+        <input type="password" id="token-input" placeholder="ghp_xxxxxxxxxxxx" autocomplete="off" spellcheck="false">
+        <button id="btn-toggle-token" onclick="toggleTokenVisibility()" title="Show/hide token">👁</button>
+      </div>
+      <button id="btn-connect" onclick="connectWithToken()">Connect</button>
+      <div id="auth-status"></div>
+      <details class="hint-details">
+        <summary>How to create a token (30 seconds)</summary>
+        <ol>
+          <li>Open <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener">github.com/settings/tokens/new</a></li>
+          <li>Set <strong>Note</strong> to anything (e.g. "APK Builder")</li>
+          <li>Set <strong>Expiration</strong> to 30 days</li>
+          <li>Select <strong>repo</strong> (full control of private repositories)</li>
+          <li>Click <strong>Generate token</strong></li>
+          <li>Copy the token and paste it above</li>
+        </ol>
+      </details>
     </section>
 
     <!-- Step 2: Upload ZIP -->
@@ -52,7 +67,7 @@
         <input type="radio" name="signing" value="generate" checked>
         <span>
         <strong>Generate a new signing key</strong><br>
-        <small>⚠\ufe0f Save the key we give you \u2014 you need it for future app updates.</small>
+        <small>Save the key we give you — you need it for future app updates.</small>
         </span>
       </label>
       <label class="radio-option">
@@ -88,12 +103,11 @@
   </main>
 
   <footer>
-    <p>Nova APK Builder \u00b7 Built with GitHub Actions</p>
+    <p>Nova APK Builder · Built with GitHub Actions</p>
   </footer>
 </div>
 
 <script src="js/config.js"></script>
-<script src="js/oauth.js"></script>
 <script src="js/github-api.js"></script>
 <script src="js/app.js"></script>
 </body>

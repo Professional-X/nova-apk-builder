@@ -119,15 +119,49 @@ button{
 }
 .key-download a{color:#58a6ff;text-decoration:underline;}
 
-/* OAuth Status */
-#oauth-status{
+/* Token Input */
+.token-input-wrap{
+  display:flex;gap:8px;margin-bottom:12px;
+}
+.token-input-wrap input{
+  flex:1;padding:12px 14px;font-size:0.95rem;
+  background:#0d1117;border:1px solid #30363d;border-radius:8px;
+  color:#e6edf3;font-family:monospace;outline:none;
+  transition:border-color .15s;
+}
+.token-input-wrap input:focus{
+  border-color:#58a6ff;
+}
+.token-input-wrap input::placeholder{
+  color:#484f58;
+}
+#btn-toggle-token{
+  width:auto;padding:12px 14px;font-size:1.1rem;
+  background:#21262d;border:1px solid #30363d;border-radius:8px;
+  cursor:pointer;
+}
+#auth-status{
   margin-top:12px;font-size:0.85rem;line-height:1.5;
 }
-.oauth-code{
-  background:#0d1117;border:1px solid #30363d;border-radius:8px;
-  padding:12px 16px;margin:8px 0;font-family:monospace;font-size:1.1rem;
-  letter-spacing:2px;text-align:center;color:#58a6ff;
+.hint-details{
+  margin-top:12px;font-size:0.8rem;color:#6e7681;
 }
+.hint-details summary{
+  cursor:pointer;color:#8b949e;margin-bottom:4px;
+}
+.hint-details ol{
+  padding-left:20px;line-height:1.8;
+}
+.hint-details a{
+  color:#58a6ff;text-decoration:none;
+}
+.hint-details a:hover{
+  text-decoration:underline;
+}
+.hint-details strong{
+  color:#c9d1d9;
+}
+
 footer{
   text-align:center;padding:24px 0;color:#484f58;font-size:0.8rem;
 }
