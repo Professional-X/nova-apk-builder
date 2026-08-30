@@ -1,5 +1,6 @@
 // =============================================================
-// GitHub API helpers — all calls use the token from sessionStorage
+// GitHub API helpers — all calls go through api.github.com (CORS safe)
+// uploads.github.com is NOT used from the browser (CORS blocked)
 // =============================================================
 
 var GitHubAPI = {
@@ -24,7 +25,7 @@ var GitHubAPI = {
     try {
       resp = await fetch(url, opts);
     } catch (e) {
-      throw new Error('Network error — check your internet connection.');
+      throw new Error('Network error — check your internet connection and try again.');
     }
 
     var text = await resp.text();
@@ -38,8 +39,6 @@ var GitHubAPI = {
       } else {
         msg = 'GitHub API error (HTTP ' + resp.status + ')';
       }
-
-      // Provide helpful hints for common errors
       if (resp.status === 401) {
         msg = 'Token is invalid or expired. Please re-enter your token.';
       } else if (resp.status === 403) {
@@ -48,79 +47,82 @@ var GitHubAPI = {
         } else {
           msg = 'Permission denied. Your token may lack the required scope.';
         }
-      } else if (resp.status === 404 && path.indexOf('/repos/') !== -1 && path.indexOf('/releases') === -1) {
-        msg = 'Resource not found. Check that the repository exists and your token has access.';
-      } else if (resp.status === 422) {
-        msg = 'Invalid request: ' + msg;
       }
-
       throw new Error(msg);
     }
     return data;
   },
 
-  // ---- upload ZIP as release asset ----
+  // ---- Upload ZIP as a Git blob (avoids uploads.github.com CORS issue) ----
   uploadZip: async function(file) {
-    // Create a draft release
-    var tag = 'build-' + Date.now();
     var repoPath = '/repos/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO;
 
+    // Step 1: Create a draft release for the output
+    var tag = 'build-' + Date.now();
     var release;
     try {
-      release = await this._request('POST',
-        repoPath + '/releases',
-        { tag_name: tag, name: tag, draft: true, body: 'APK build request' }
-      );
-    } catch (e) {
-      throw new Error('Failed to create release on GitHub: ' + e.message);
-    }
-
-    // Upload ZIP as release asset (separate request — not JSON)
-    var uploadUrl = release.upload_url.replace('{?name,label}', '?name=source.zip');
-
-    var resp;
-    try {
-      resp = await fetch(uploadUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + getToken(),
-          'Content-Type': 'application/zip'
-        },
-        body: file
+      release = await this._request('POST', repoPath + '/releases', {
+        tag_name: tag, name: tag, draft: true, body: 'APK build in progress...'
       });
     } catch (e) {
-      throw new Error('Network error while uploading file. Check your connection and try again.');
+      throw new Error('Failed to create release: ' + e.message);
     }
 
-    if (!resp.ok) {
-      var errText = await resp.text().catch(function() { return 'Unknown error'; });
-      var errMsg = 'Upload failed';
-      try {
-        var errJson = JSON.parse(errText);
-        if (errJson.message) errMsg = errJson.message;
-      } catch(e) {}
-      if (resp.status === 413) {
-        errMsg = 'File too large for upload. Maximum is ' + CONFIG.MAX_ZIP_MB + ' MB.';
-      } else if (resp.status === 422) {
-        errMsg = 'Upload rejected: ' + errMsg + '. The file may be too large or the release may be in an invalid state.';
-      }
-      throw new Error(errMsg);
+    // Step 2: Read file as base64 and upload as Git blob via api.github.com
+    var base64;
+    try {
+      base64 = await this._readFileAsBase64(file);
+    } catch (e) {
+      throw new Error('Failed to read file: ' + e.message);
     }
 
-    return { releaseId: release.id, tag: tag, uploadUrl: release.html_url };
+    var blob;
+    try {
+      blob = await this._request('POST', repoPath + '/git/blobs', {
+        content: base64,
+        encoding: 'base64'
+      });
+    } catch (e) {
+      throw new Error('Failed to upload file to GitHub: ' + e.message);
+    }
+
+    return {
+      releaseId: release.id,
+      blobSha: blob.sha,
+      tag: tag
+    };
+  },
+
+  _readFileAsBase64: function(file) {
+    return new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function() {
+        // reader.result is like "data:application/zip;base64,XXXXX"
+        var base64 = reader.result.split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = function() {
+        reject(new Error('Could not read file'));
+      };
+      reader.readAsDataURL(file);
+    });
   },
 
   // ---- trigger build workflow ----
-  triggerBuild: async function(releaseId, signingMode) {
+  triggerBuild: async function(releaseId, blobSha, signingMode) {
     var repoPath = '/repos/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO;
     try {
       return await this._request('POST',
         repoPath + '/actions/workflows/build-apk.yml/dispatches',
-        { ref: 'main', inputs: { release_id: String(releaseId), signing_mode: signingMode } }
+        { ref: 'main', inputs: {
+          release_id: String(releaseId),
+          blob_sha: blobSha,
+          signing_mode: signingMode
+        }}
       );
     } catch (e) {
       if (e.message.indexOf('404') !== -1 || e.message.indexOf('not found') !== -1) {
-        throw new Error('Build workflow not found. The repository may not have the build-apk.yml workflow file on the main branch.');
+        throw new Error('Build workflow not found on the main branch.');
       }
       throw new Error('Failed to trigger build: ' + e.message);
     }
@@ -138,15 +140,9 @@ var GitHubAPI = {
     return null;
   },
 
-  // ---- get release assets (to find APK) ----
+  // ---- get release assets (to find APK download links) ----
   getReleaseAssets: async function(releaseId) {
     var repoPath = '/repos/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO;
     return await this._request('GET', repoPath + '/releases/' + releaseId + '/assets');
-  },
-
-  // ---- update release (mark non-draft) ----
-  updateRelease: async function(releaseId, body) {
-    var repoPath = '/repos/' + CONFIG.GITHUB_OWNER + '/' + CONFIG.GITHUB_REPO;
-    return await this._request('PATCH', repoPath + '/releases/' + releaseId, body);
   }
 };

@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       release_id:
-        description: 'GitHub Release ID containing source ZIP'
+        description: 'GitHub Release ID for output'
+        required: true
+        type: string
+      blob_sha:
+        description: 'Git blob SHA containing the source ZIP'
         required: true
         type: string
       signing_mode:
@@ -30,25 +34,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Download source ZIP from release
+      - name: Download source ZIP from blob
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::group::Download source ZIP"
-          RELEASE_ID="${{ inputs.release_id }}"
-          ASSETS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/releases/$RELEASE_ID/assets")
-          ZIP_URL=$(echo "$ASSETS" | jq -r '.[] | select(.name=="source.zip") | .url')
-          if [ -z "$ZIP_URL" ] || [ "$ZIP_URL" = "null" ]; then
-            echo "ERROR: source.zip not found in release assets"
-            exit 1
-          fi
-          curl -L -o source.zip -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/octet-stream" "$ZIP_URL"
+          echo "::group::Download source ZIP from blob"
+          BLOB_SHA="${{ inputs.blob_sha }}"
+          curl -s -L -o source.zip \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3.raw" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/git/blobs/$BLOB_SHA"
           ZIP_SIZE=$(stat -c%s source.zip 2>/dev/null || stat -f%z source.zip)
           echo "ZIP size: $ZIP_SIZE bytes"
           if [ "$ZIP_SIZE" -lt 100 ]; then
-            echo "ERROR: ZIP file is too small or empty"
+            echo "ERROR: ZIP file is too small or empty (download may have failed)"
+            file source.zip
+            head -c 200 source.zip
             exit 1
           fi
           if [ "$ZIP_SIZE" -gt 524288000 ]; then

@@ -204,7 +204,7 @@ async function startBuild() {
 
     // Trigger
     updateStep(1, 'active', 'Triggering build workflow...');
-    await GitHubAPI.triggerBuild(uploadResult.releaseId, signingMode);
+    await GitHubAPI.triggerBuild(uploadResult.releaseId, uploadResult.blobSha, signingMode);
     updateStep(1, 'done', 'Build triggered successfully');
 
     // Start polling
