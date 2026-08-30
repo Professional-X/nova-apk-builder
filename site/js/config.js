@@ -15,7 +15,7 @@
 const CONFIG = {
   GITHUB_OWNER: 'Professional-X',
   GITHUB_REPO:  'nova-apk-builder',
-  OAUTH_CLIENT_ID: '',   // <-- Paste your OAuth App Client ID here
+  OAUTH_CLIENT_ID: 'Ov23110ErDURA011z3x5',   // <-- Paste your OAuth App Client ID here
   API_BASE: 'https://api.github.com',
   MAX_ZIP_MB: 100,
   POLL_INTERVAL_MS: 8000,
