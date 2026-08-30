@@ -221,7 +221,22 @@ jobs:
           echo "::group::Build Flutter APK"
           cd workspace/${{ steps.detect.outputs.PROJECT_ROOT }}
           flutter pub get 2>&1 | tail -20
-          flutter build apk --release 2>&1 | tail -30
+          # Auto-fix Gradle wrapper version if needed
+          GRADLE_PROP="android/gradle/wrapper/gradle-wrapper.properties"
+          if [ -f "$GRADLE_PROP" ]; then
+            CURRENT_VER=$(grep 'distributionUrl' "$GRADLE_PROP" | grep -oP '\d+\.\d+(?=\.\d+-bin)')
+            echo "Current Gradle version: ${CURRENT_VER:-unknown}"
+            if [ -n "$CURRENT_VER" ]; then
+              MAJOR=$(echo "$CURRENT_VER" | cut -d. -f1)
+              MINOR=$(echo "$CURRENT_VER" | cut -d. -f2)
+              if [ "$MAJOR" -lt 8 ] || ([ "$MAJOR" -eq 8 ] && [ "$MINOR" -lt 14 ]); then
+                echo "Upgrading Gradle from $CURRENT_VER to 8.14"
+                sed -i 's|distributionUrl=.*|distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14-bin.zip|' "$GRADLE_PROP"
+                cat "$GRADLE_PROP"
+              fi
+            fi
+          fi
+          flutter build apk --release --android-skip-build-dependency-validation 2>&1 | tail -40
           echo "::endgroup::"
           echo "::group::Locate APK"
           find . -name "*.apk" 2>/dev/null
