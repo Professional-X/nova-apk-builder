@@ -24,7 +24,7 @@ const OAuth = {
         headers: { 'Accept': 'application/json' },
         body: new URLSearchParams({
           client_id: CONFIG.OAUTH_CLIENT_ID,
-          scope: 'public_repo repo:status'
+          scope: 'repo'
         })
       });
       const data = await resp.json();
@@ -65,7 +65,7 @@ const OAuth = {
         return;
       }
 
-      fetch('https://github.com/login/device/code', {  // reuse endpoint with grant_type
+      fetch('https://github.com/login/oauth/access_token', {
         method: 'POST',
         headers: { 'Accept': 'application/json' },
         body: new URLSearchParams({
