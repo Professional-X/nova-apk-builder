@@ -218,44 +218,54 @@ jobs:
         if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
         shell: bash
         run: |
-          set -o pipefail
           cd workspace/${{ steps.detect.outputs.PROJECT_ROOT }}
           ANDROID_DIR="android"
-          echo "::group::Patch project for compatibility"
-          # Fix 1: Upgrade Gradle wrapper if below 8.10
+          echo "## Patch project" >> $GITHUB_STEP_SUMMARY
           GRADLE_PROP="$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties"
           if [ -f "$GRADLE_PROP" ]; then
             CURRENT_VER=$(grep 'distributionUrl' "$GRADLE_PROP" | grep -oP '\d+\.\d+(?=\.\d+-bin)')
-            echo "Current Gradle version: ${CURRENT_VER:-unknown}"
+            echo "Gradle version: ${CURRENT_VER:-unknown}" >> $GITHUB_STEP_SUMMARY
             if [ -n "$CURRENT_VER" ]; then
               MAJOR=$(echo "$CURRENT_VER" | cut -d. -f1)
               MINOR=$(echo "$CURRENT_VER" | cut -d. -f2)
               if [ "$MAJOR" -lt 8 ] || ([ "$MAJOR" -eq 8 ] && [ "$MINOR" -lt 10 ]); then
-                echo "Upgrading Gradle from $CURRENT_VER to 8.10"
+                echo "Upgrading Gradle to 8.10" >> $GITHUB_STEP_SUMMARY
                 sed -i 's|distributionUrl=.*|distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip|' "$GRADLE_PROP"
               fi
             fi
           fi
-          # Fix 2: Remove hardcoded NDK version (let Flutter manage it)
           APP_BUILD="$ANDROID_DIR/app/build.gradle"
-          if [ -f "$APP_BUILD" ] && grep -q 'ndkVersion.*"26\.' "$APP_BUILD"; then
-            echo "Patching hardcoded NDK version in app/build.gradle"
-            sed -i 's|ndkVersion = .*|// ndkVersion managed by Flutter|' "$APP_BUILD"
+          if [ -f "$APP_BUILD" ]; then
+            if grep -q 'ndkVersion.*"26\.' "$APP_BUILD"; then
+              echo "Patching hardcoded NDK" >> $GITHUB_STEP_SUMMARY
+              sed -i 's|ndkVersion = .*|// ndkVersion managed by Flutter|' "$APP_BUILD"
+            fi
+            if grep -q '//ndkVersion flutter.ndkVersion' "$APP_BUILD"; then
+              echo "Enabling Flutter NDK" >> $GITHUB_STEP_SUMMARY
+              sed -i 's|// *ndkVersion flutter.ndkVersion|ndkVersion flutter.ndkVersion|' "$APP_BUILD"
+            fi
           fi
-          if [ -f "$APP_BUILD" ] && grep -q '//ndkVersion flutter.ndkVersion' "$APP_BUILD"; then
-            echo "Enabling Flutter-managed NDK version"
-            sed -i 's|// *ndkVersion flutter.ndkVersion|ndkVersion flutter.ndkVersion|' "$APP_BUILD"
+          echo "### flutter pub get" >> $GITHUB_STEP_SUMMARY
+          flutter pub get 2>&1 | tee /tmp/pub_get.log
+          PUB_EXIT=${PIPESTATUS[0]}
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          cat /tmp/pub_get.log >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "pub get exit: $PUB_EXIT" >> $GITHUB_STEP_SUMMARY
+          if [ "$PUB_EXIT" -ne 0 ]; then
+            echo "ERROR: flutter pub get failed" >> $GITHUB_STEP_SUMMARY
+            exit 1
           fi
-          echo "::endgroup::"
-          echo "::group::Flutter pub get"
-          flutter pub get 2>&1
-          echo "::endgroup::"
-          echo "::group::Build Flutter APK"
-          flutter build apk --release 2>&1
-          echo "::endgroup::"
-          echo "::group::Locate APK"
-          find . -name "*.apk" 2>/dev/null
-          echo "::endgroup::"
+          echo "### flutter build apk --release" >> $GITHUB_STEP_SUMMARY
+          flutter build apk --release 2>&1 | tee /tmp/flutter_build.log
+          BUILD_EXIT=${PIPESTATUS[0]}
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          tail -50 /tmp/flutter_build.log >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "Build exit: $BUILD_EXIT" >> $GITHUB_STEP_SUMMARY
+          if [ "$BUILD_EXIT" -ne 0 ]; then exit 1; fi
+          echo "### APK files" >> $GITHUB_STEP_SUMMARY
+          find . -name "*.apk" 2>/dev/null >> $GITHUB_STEP_SUMMARY
 
       - name: Locate APK
         id: locate
