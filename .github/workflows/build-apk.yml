@@ -241,14 +241,17 @@ jobs:
           chmod +x gradlew 2>/dev/null || true
           
           BUILD_SUCCEEDED=false
+          BUILD_LOG="$RUNNER_TEMP/build.log"
           
           # Strategy 1: try gradlew (with wrapper jar)
           if [ -f "gradlew" ] && [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
             echo "Using project's Gradle wrapper"
-            if ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tail -80; then
+            if ./gradlew assembleRelease --no-daemon --stacktrace > "$BUILD_LOG" 2>&1; then
               BUILD_SUCCEEDED=true
             else
               echo "Gradle wrapper failed, trying fallback..."
+              echo "--- Wrapper error (last 40 lines) ---"
+              tail -40 "$BUILD_LOG"
             fi
           fi
           
@@ -258,7 +261,19 @@ jobs:
             wget -q https://services.gradle.org/distributions/gradle-8.4-bin.zip
             unzip -q gradle-8.4-bin.zip
             export PATH="$PWD/gradle-8.4/bin:$PATH"
-            gradle assembleRelease --no-daemon --stacktrace 2>&1 | tail -80
+            set +e
+            gradle assembleRelease --no-daemon --stacktrace > "$BUILD_LOG" 2>&1
+            BUILD_EXIT=$?
+            set -e
+          fi
+          
+          # Show build output
+          echo "--- Build output (last 60 lines) ---"
+          tail -60 "$BUILD_LOG"
+          
+          if [ "$BUILD_SUCCEEDED" = "false" ] && [ "${BUILD_EXIT:-0}" -ne 0 ]; then
+            echo "ERROR: Gradle build failed (exit code $BUILD_EXIT)"
+            exit 1
           fi
           
           # Find the generated APK
