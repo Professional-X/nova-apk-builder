@@ -219,25 +219,39 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          echo "::group::Build Flutter APK"
           cd workspace/${{ steps.detect.outputs.PROJECT_ROOT }}
-          flutter pub get 2>&1 | tail -20
-          # Auto-fix Gradle wrapper version if needed
-          GRADLE_PROP="android/gradle/wrapper/gradle-wrapper.properties"
+          ANDROID_DIR="android"
+          echo "::group::Patch project for compatibility"
+          # Fix 1: Upgrade Gradle wrapper if below 8.10
+          GRADLE_PROP="$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties"
           if [ -f "$GRADLE_PROP" ]; then
             CURRENT_VER=$(grep 'distributionUrl' "$GRADLE_PROP" | grep -oP '\d+\.\d+(?=\.\d+-bin)')
             echo "Current Gradle version: ${CURRENT_VER:-unknown}"
             if [ -n "$CURRENT_VER" ]; then
               MAJOR=$(echo "$CURRENT_VER" | cut -d. -f1)
               MINOR=$(echo "$CURRENT_VER" | cut -d. -f2)
-              if [ "$MAJOR" -lt 8 ] || ([ "$MAJOR" -eq 8 ] && [ "$MINOR" -lt 14 ]); then
-                echo "Upgrading Gradle from $CURRENT_VER to 8.14"
-                sed -i 's|distributionUrl=.*|distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14-bin.zip|' "$GRADLE_PROP"
-                cat "$GRADLE_PROP"
+              if [ "$MAJOR" -lt 8 ] || ([ "$MAJOR" -eq 8 ] && [ "$MINOR" -lt 10 ]); then
+                echo "Upgrading Gradle from $CURRENT_VER to 8.10"
+                sed -i 's|distributionUrl=.*|distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip|' "$GRADLE_PROP"
               fi
             fi
           fi
-          flutter build apk --release 2>&1 | tail -40
+          # Fix 2: Remove hardcoded NDK version (let Flutter manage it)
+          APP_BUILD="$ANDROID_DIR/app/build.gradle"
+          if [ -f "$APP_BUILD" ] && grep -q 'ndkVersion.*"26\.' "$APP_BUILD"; then
+            echo "Patching hardcoded NDK version in app/build.gradle"
+            sed -i 's|ndkVersion = .*|// ndkVersion managed by Flutter|' "$APP_BUILD"
+          fi
+          if [ -f "$APP_BUILD" ] && grep -q '//ndkVersion flutter.ndkVersion' "$APP_BUILD"; then
+            echo "Enabling Flutter-managed NDK version"
+            sed -i 's|// *ndkVersion flutter.ndkVersion|ndkVersion flutter.ndkVersion|' "$APP_BUILD"
+          fi
+          echo "::endgroup::"
+          echo "::group::Flutter pub get"
+          flutter pub get 2>&1
+          echo "::endgroup::"
+          echo "::group::Build Flutter APK"
+          flutter build apk --release 2>&1
           echo "::endgroup::"
           echo "::group::Locate APK"
           find . -name "*.apk" 2>/dev/null
