@@ -217,6 +217,8 @@ jobs:
       - name: Build Flutter APK
         if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
         shell: bash
+        env:
+          GRADLE_OPTS: '-Xmx4g -XX:MaxMetaspaceSize=512m -Dorg.gradle.daemon=false'
         run: |
           set -o pipefail
           echo "::group::Build Flutter APK"
@@ -237,7 +239,7 @@ jobs:
             fi
           fi
 
-          # Patch NDK if hardcoded
+          # Patch NDK if hardcoded to 26.x (incompatible on GitHub runners)
           APP_BUILD="android/app/build.gradle"
           if [ -f "$APP_BUILD" ]; then
             if grep -q 'ndkVersion.*"26\.' "$APP_BUILD"; then
