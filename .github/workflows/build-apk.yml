@@ -218,54 +218,47 @@ jobs:
         if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
         shell: bash
         run: |
+          set -o pipefail
+          echo "::group::Build Flutter APK"
           cd workspace/${{ steps.detect.outputs.PROJECT_ROOT }}
-          ANDROID_DIR="android"
-          echo "## Patch project" >> $GITHUB_STEP_SUMMARY
-          GRADLE_PROP="$ANDROID_DIR/gradle/wrapper/gradle-wrapper.properties"
+
+          # Patch Gradle version if needed
+          GRADLE_PROP="android/gradle/wrapper/gradle-wrapper.properties"
           if [ -f "$GRADLE_PROP" ]; then
-            CURRENT_VER=$(grep 'distributionUrl' "$GRADLE_PROP" | grep -oP '\d+\.\d+(?=\.\d+-bin)')
-            echo "Gradle version: ${CURRENT_VER:-unknown}" >> $GITHUB_STEP_SUMMARY
+            CURRENT_VER=$(grep 'distributionUrl' "$GRADLE_PROP" | grep -oP '\d+\.\d+(?=\.\d+-bin)' || true)
+            echo "Gradle version: ${CURRENT_VER:-unknown}"
             if [ -n "$CURRENT_VER" ]; then
               MAJOR=$(echo "$CURRENT_VER" | cut -d. -f1)
               MINOR=$(echo "$CURRENT_VER" | cut -d. -f2)
               if [ "$MAJOR" -lt 8 ] || ([ "$MAJOR" -eq 8 ] && [ "$MINOR" -lt 10 ]); then
-                echo "Upgrading Gradle to 8.10" >> $GITHUB_STEP_SUMMARY
+                echo "Upgrading Gradle to 8.10"
                 sed -i 's|distributionUrl=.*|distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip|' "$GRADLE_PROP"
               fi
             fi
           fi
-          APP_BUILD="$ANDROID_DIR/app/build.gradle"
+
+          # Patch NDK if hardcoded
+          APP_BUILD="android/app/build.gradle"
           if [ -f "$APP_BUILD" ]; then
             if grep -q 'ndkVersion.*"26\.' "$APP_BUILD"; then
-              echo "Patching hardcoded NDK" >> $GITHUB_STEP_SUMMARY
+              echo "Patching hardcoded NDK 26.x"
               sed -i 's|ndkVersion = .*|// ndkVersion managed by Flutter|' "$APP_BUILD"
             fi
-            if grep -q '//ndkVersion flutter.ndkVersion' "$APP_BUILD"; then
-              echo "Enabling Flutter NDK" >> $GITHUB_STEP_SUMMARY
-              sed -i 's|// *ndkVersion flutter.ndkVersion|ndkVersion flutter.ndkVersion|' "$APP_BUILD"
-            fi
           fi
-          echo "### flutter pub get" >> $GITHUB_STEP_SUMMARY
-          flutter pub get 2>&1 | tee /tmp/pub_get.log
-          PUB_EXIT=${PIPESTATUS[0]}
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          cat /tmp/pub_get.log >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "pub get exit: $PUB_EXIT" >> $GITHUB_STEP_SUMMARY
-          if [ "$PUB_EXIT" -ne 0 ]; then
-            echo "ERROR: flutter pub get failed" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          fi
-          echo "### flutter build apk --release" >> $GITHUB_STEP_SUMMARY
-          flutter build apk --release 2>&1 | tee /tmp/flutter_build.log
-          BUILD_EXIT=${PIPESTATUS[0]}
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          tail -50 /tmp/flutter_build.log >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "Build exit: $BUILD_EXIT" >> $GITHUB_STEP_SUMMARY
-          if [ "$BUILD_EXIT" -ne 0 ]; then exit 1; fi
-          echo "### APK files" >> $GITHUB_STEP_SUMMARY
-          find . -name "*.apk" 2>/dev/null >> $GITHUB_STEP_SUMMARY
+
+          # Get dependencies
+          echo "--- flutter pub get ---"
+          flutter pub get 2>&1 | tail -30
+          echo "--- end pub get ---"
+
+          # Build release APK
+          echo "--- flutter build apk --release ---"
+          flutter build apk --release 2>&1 | tail -40
+          echo "--- end build ---"
+
+          echo "::group::Locate APK"
+          find . -name "*.apk" 2>/dev/null
+          echo "::endgroup::"
 
       - name: Locate APK
         id: locate
