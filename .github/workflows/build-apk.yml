@@ -237,7 +237,7 @@ jobs:
               fi
             fi
           fi
-          flutter build apk --release --android-skip-build-dependency-validation 2>&1 | tail -40
+          flutter build apk --release 2>&1 | tail -40
           echo "::endgroup::"
           echo "::group::Locate APK"
           find . -name "*.apk" 2>/dev/null
