@@ -1,0 +1,23 @@
+// Nova APK Builder - Gradle compatibility fix
+// Fixes jni plugin and other plugins that reference 'flutter' extension
+allprojects { project ->
+    project.afterEvaluate {
+        if (project.hasProperty('android')) {
+            try {
+                // Check if 'flutter' property exists on the android extension
+                // If not, provide a no-op placeholder so plugin build.gradle files don't fail
+                def android = project.android
+                def hasFlutter = android.hasProperty('flutter')
+                if (!hasFlutter) {
+                    android.ext.flutter = new Expando(source: '../../')
+                }
+            } catch (ignored) {
+                // Ignore if android extension is not fully configured yet
+            }
+            // Ensure namespace is set (required by AGP 8+)
+            if (project.android.namespace == null) {
+                project.android.namespace = project.group.toString()
+            }
+        }
+    }
+}
