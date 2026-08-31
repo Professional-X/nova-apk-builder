@@ -318,12 +318,33 @@ jobs:
 
           # Build release APK
           echo "--- flutter build apk --release ---"
-          flutter build apk --release 2>&1 | tail -40
-          echo "--- end build ---"
+          BUILD_LOG="$RUNNER_TEMP/flutter_build.log"
+          set +e
+          flutter build apk --release 2>&1 | tee "$BUILD_LOG"
+          BUILD_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "--- end build (exit $BUILD_EXIT) ---"
+          # Always upload build log as artifact
+          mkdir -p "$RUNNER_TEMP/build-artifacts"
+          cp "$BUILD_LOG" "$RUNNER_TEMP/build-artifacts/build.log" 2>/dev/null || true
+          if [ "$BUILD_EXIT" -ne 0 ]; then
+            echo "## Flutter Build Failed" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -80 "$BUILD_LOG" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
 
           echo "::group::Locate APK"
           find . -name "*.apk" 2>/dev/null
           echo "::endgroup::"
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build-artifacts/
 
       - name: Locate APK
         id: locate
