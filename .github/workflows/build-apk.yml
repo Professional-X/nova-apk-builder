@@ -40,10 +40,40 @@ jobs:
         run: |
           echo "::group::Download source ZIP from blob"
           BLOB_SHA="${{ inputs.blob_sha }}"
-          curl -s -L -o source.zip \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3.raw" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/git/blobs/$BLOB_SHA"
+          echo "Blob SHA: $BLOB_SHA"
+
+          # Method 1: gh api (most reliable on runners)
+          if command -v gh &>/dev/null; then
+            echo "Downloading via gh api..."
+            if gh api \
+              "repos/${{ github.repository }}/git/blobs/$BLOB_SHA" \
+              -H "Accept: application/vnd.github.v3.raw" \
+              > source.zip 2>&1; then
+              echo "gh api download succeeded"
+            else
+              echo "gh api failed, trying curl..."
+              rm -f source.zip
+            fi
+          fi
+
+          # Method 2: curl with GITHUB_TOKEN
+          if [ ! -f source.zip ] || [ ! -s source.zip ]; then
+            echo "Downloading via curl..."
+            curl -sfL -o source.zip \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3.raw" \
+              "${{ github.api_url }}/repos/${{ github.repository }}/git/blobs/$BLOB_SHA" || true
+          fi
+
+          # Method 3: get JSON with base64 and decode with base64 command
+          if [ ! -f source.zip ] || [ ! -s source.zip ]; then
+            echo "Trying JSON base64 decode method..."
+            B64=$(curl -sf -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "${{ github.api_url }}/repos/${{ github.repository }}/git/blobs/$BLOB_SHA" | jq -r '.content')
+            echo "$B64" | base64 -d > source.zip
+            echo "Decoded from base64"
+          fi
+
           ZIP_SIZE=$(stat -c%s source.zip 2>/dev/null || stat -f%z source.zip)
           echo "ZIP size: $ZIP_SIZE bytes"
           if [ "$ZIP_SIZE" -lt 100 ]; then
