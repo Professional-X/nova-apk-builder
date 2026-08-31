@@ -1,36 +1,30 @@
-# Nova APK Builder - Build Workflow
-# Triggered by the website via workflow_dispatch
-
 name: Build APK
-
 on:
   workflow_dispatch:
     inputs:
       release_id:
-        description: 'GitHub Release ID for output'
+        description: "GitHub Release ID for output"
         required: true
         type: string
       blob_sha:
-        description: 'Git blob SHA containing the source ZIP'
+        description: "Git blob SHA containing the source ZIP"
         required: true
         type: string
       signing_mode:
-        description: 'Signing mode: generate or existing'
+        description: "Signing mode: generate or existing"
         required: true
         type: string
-        default: 'generate'
+        default: generate
 
 permissions:
   contents: write
   actions: read
-
 env:
-  JAVA_DIST: 'temurin'
-  JAVA_VERSION: '17'
-
+  JAVA_DIST: temurin
+  JAVA_VERSION: "17"
 jobs:
   build:
-    name: Build & Sign APK
+    name: Build and Sign APK
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -41,22 +35,16 @@ jobs:
           echo "::group::Download source ZIP from blob"
           BLOB_SHA="${{ inputs.blob_sha }}"
           echo "Blob SHA: $BLOB_SHA"
-
-          # Method 1: gh api (most reliable on runners)
           if command -v gh &>/dev/null; then
             echo "Downloading via gh api..."
-            if gh api \
-              "repos/${{ github.repository }}/git/blobs/$BLOB_SHA" \
-              -H "Accept: application/vnd.github.v3.raw" \
-              > source.zip 2>&1; then
+            if gh api "repos/${{ github.repository }}/git/blobs/$BLOB_SHA" \
+              -H "Accept: application/vnd.github.v3.raw" > source.zip 2>&1; then
               echo "gh api download succeeded"
             else
               echo "gh api failed, trying curl..."
               rm -f source.zip
             fi
           fi
-
-          # Method 2: curl with GITHUB_TOKEN
           if [ ! -f source.zip ] || [ ! -s source.zip ]; then
             echo "Downloading via curl..."
             curl -sfL -o source.zip \
@@ -64,26 +52,22 @@ jobs:
               -H "Accept: application/vnd.github.v3.raw" \
               "${{ github.api_url }}/repos/${{ github.repository }}/git/blobs/$BLOB_SHA" || true
           fi
-
-          # Method 3: get JSON with base64 and decode with base64 command
           if [ ! -f source.zip ] || [ ! -s source.zip ]; then
-            echo "Trying JSON base64 decode method..."
+            echo "Trying JSON base64 decode..."
             B64=$(curl -sf -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "${{ github.api_url }}/repos/${{ github.repository }}/git/blobs/$BLOB_SHA" | jq -r '.content')
+              "${{ github.api_url }}/repos/${{ github.repository }}/git/blobs/$BLOB_SHA" | jq -r .content)
             echo "$B64" | base64 -d > source.zip
-            echo "Decoded from base64"
           fi
-
           ZIP_SIZE=$(stat -c%s source.zip 2>/dev/null || stat -f%z source.zip)
           echo "ZIP size: $ZIP_SIZE bytes"
           if [ "$ZIP_SIZE" -lt 100 ]; then
-            echo "ERROR: ZIP file is too small or empty (download may have failed)"
+            echo "ERROR: ZIP too small or empty"
             file source.zip
             head -c 200 source.zip
             exit 1
           fi
           if [ "$ZIP_SIZE" -gt 524288000 ]; then
-            echo "ERROR: ZIP file exceeds 500 MB limit"
+            echo "ERROR: ZIP exceeds 500 MB"
             exit 1
           fi
           echo "::endgroup::"
@@ -91,18 +75,18 @@ jobs:
       - name: Validate ZIP file
         run: |
           echo "::group::Validate ZIP"
-          if ! file source.zip | grep -q 'Zip archive'; then
+          if ! file source.zip | grep -q "Zip archive"; then
             echo "ERROR: Not a valid ZIP file"
             exit 1
           fi
-          if unzip -l source.zip | grep -qE '\.\./|\\\\\.\.'; then
-            echo "ERROR: ZIP contains path traversal entries"
+          if unzip -l source.zip | grep -qE "\.\.\\\\.\\."; then
+            echo "ERROR: Path traversal detected"
             exit 1
           fi
-          ENTRY_COUNT=$(unzip -l source.zip | tail -1 | awk '{print $2}')
+          ENTRY_COUNT=$(unzip -l source.zip | tail -1 | awk "{print \\$2}")
           ENTRY_COUNT=${ENTRY_COUNT:-0}
           if [ "$ENTRY_COUNT" -gt 50000 ]; then
-            echo "ERROR: ZIP has too many entries ($ENTRY_COUNT). Possible zip bomb."
+            echo "ERROR: Too many entries ($ENTRY_COUNT)"
             exit 1
           fi
           echo "Entries: $ENTRY_COUNT"
@@ -115,117 +99,84 @@ jobs:
           cd workspace
           unzip -o ../source.zip
           cd ..
-          echo "Extracted contents:"
           find workspace -maxdepth 3 -type f | head -40
           echo "::endgroup::"
 
       - name: Detect project type
         id: detect
         run: |
-          echo "::group::Detect project"
           cd workspace
           PROJECT_ROOT=""
           PROJECT_TYPE=""
-          is_flutter() {
-            local dir="$1"
-            [ -f "$dir/pubspec.yaml" ] && grep -q 'flutter:' "$dir/pubspec.yaml" 2>/dev/null
-          }
-          is_android() {
-            local dir="$1"
-            [ -f "$dir/settings.gradle" ] || [ -f "$dir/settings.gradle.kts" ] || \
-            ([ -f "$dir/build.gradle" ] && -d "$dir/app" ])
-          }
-          if is_flutter .; then
-            PROJECT_ROOT="."
-            PROJECT_TYPE="flutter"
-          elif is_android .; then
-            PROJECT_ROOT="."
-            PROJECT_TYPE="android"
+          is_flutter() { [ -f "$1/pubspec.yaml" ] && grep -q "flutter:" "$1/pubspec.yaml" 2>/dev/null; }
+          is_android() { [ -f "$1/settings.gradle" ] || [ -f "$1/settings.gradle.kts" ] || ([ -f "$1/build.gradle" ] && [ -d "$1/app" ]); }
+          if is_flutter .; then PROJECT_ROOT="."; PROJECT_TYPE="flutter"
+          elif is_android .; then PROJECT_ROOT="."; PROJECT_TYPE="android"
           else
-            for dir in */; do
-              [ -d "$dir" ] || continue
-              dir="${dir%/}"
-              if [ -z "$PROJECT_ROOT" ] && is_flutter "$dir"; then
-                PROJECT_ROOT="$dir"
-                PROJECT_TYPE="flutter"
-              elif [ -z "$PROJECT_ROOT" ] && is_android "$dir"; then
-                PROJECT_ROOT="$dir"
-                PROJECT_TYPE="android"
-              fi
+            for dir in */; do d="${dir%/}"; [ -d "$d" ] || continue
+              if [ -z "$PROJECT_ROOT" ] && is_flutter "$d"; then PROJECT_ROOT="$d"; PROJECT_TYPE="flutter"
+              elif [ -z "$PROJECT_ROOT" ] && is_android "$d"; then PROJECT_ROOT="$d"; PROJECT_TYPE="android"; fi
             done
           fi
           if [ -z "$PROJECT_ROOT" ]; then
-            for dir in */*/; do
-              [ -d "$dir" ] || continue
-              dir="${dir%/}"
-              if [ -z "$PROJECT_ROOT" ] && is_flutter "$dir"; then
-                PROJECT_ROOT="$dir"
-                PROJECT_TYPE="flutter"
-              elif [ -z "$PROJECT_ROOT" ] && is_android "$dir"; then
-                PROJECT_ROOT="$dir"
-                PROJECT_TYPE="android"
-              fi
+            for dir in */*/; do d="${dir%/}"; [ -d "$d" ] || continue
+              if [ -z "$PROJECT_ROOT" ] && is_flutter "$d"; then PROJECT_ROOT="$d"; PROJECT_TYPE="flutter"
+              elif [ -z "$PROJECT_ROOT" ] && is_android "$d"; then PROJECT_ROOT="$d"; PROJECT_TYPE="android"; fi
             done
           fi
           if [ -z "$PROJECT_ROOT" ]; then
-            echo "ERROR: No Android or Flutter project found in ZIP"
-            echo "Contents:"
+            echo "ERROR: No Android or Flutter project found"
             find . -maxdepth 3 -type f | head -30
             exit 1
           fi
           echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_OUTPUT
           echo "PROJECT_TYPE=$PROJECT_TYPE" >> $GITHUB_OUTPUT
           echo "Detected: $PROJECT_TYPE at $PROJECT_ROOT"
-          echo "::endgroup::"
 
       - name: Setup Java
-        if: steps.detect.outputs.PROJECT_TYPE == 'android'
+        if: steps.detect.outputs.PROJECT_TYPE == android
         uses: actions/setup-java@v4
         with:
           distribution: ${{ env.JAVA_DIST }}
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Setup Flutter
-        if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
+        if: steps.detect.outputs.PROJECT_TYPE == flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.29.3'
-          channel: 'stable'
+          flutter-version: "3.29.3"
+          channel: stable
           cache: true
 
       - name: Setup Java for Flutter
-        if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
+        if: steps.detect.outputs.PROJECT_TYPE == flutter
         uses: actions/setup-java@v4
         with:
           distribution: ${{ env.JAVA_DIST }}
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Setup Android SDK
-        if: steps.detect.outputs.PROJECT_TYPE == 'android' || steps.detect.outputs.PROJECT_TYPE == 'flutter'
+        if: steps.detect.outputs.PROJECT_TYPE == android || steps.detect.outputs.PROJECT_TYPE == flutter
         uses: android-actions/setup-android@v3
 
       - name: Build Android APK
-        if: steps.detect.outputs.PROJECT_TYPE == 'android'
+        if: steps.detect.outputs.PROJECT_TYPE == android
         shell: bash
         run: |
           set -o pipefail
-          echo "::group::Build Android APK"
           cd workspace/${{ steps.detect.outputs.PROJECT_ROOT }}
           chmod +x gradlew 2>/dev/null || true
           BUILD_SUCCEEDED=false
           BUILD_LOG="$RUNNER_TEMP/build.log"
-          if [ -f "gradlew" ] && [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "Using project Gradle wrapper"
+          if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
             if ./gradlew assembleRelease --no-daemon --stacktrace > "$BUILD_LOG" 2>&1; then
               BUILD_SUCCEEDED=true
             else
               echo "Gradle wrapper failed, trying fallback..."
-              echo "--- Wrapper error (last 40 lines) ---"
               tail -40 "$BUILD_LOG"
             fi
           fi
-          if [ "$BUILD_SUCCEEDED" = "false" ]; then
-            echo "Installing Gradle 8.4 directly"
+          if [ "$BUILD_SUCCEEDED" = false ]; then
             wget -q https://services.gradle.org/distributions/gradle-8.4-bin.zip
             unzip -q gradle-8.4-bin.zip
             export PATH="$PWD/gradle-8.4/bin:$PATH"
@@ -234,117 +185,93 @@ jobs:
             BUILD_EXIT=$?
             set -e
           fi
-          echo "--- Build output (last 60 lines) ---"
           tail -60 "$BUILD_LOG"
-          if [ "$BUILD_SUCCEEDED" = "false" ] && [ "${BUILD_EXIT:-0}" -ne 0 ]; then
-            echo "ERROR: Gradle build failed (exit code $BUILD_EXIT)"
+          if [ "$BUILD_SUCCEEDED" = false ] && [ "${BUILD_EXIT:-0}" -ne 0 ]; then
+            echo "ERROR: Gradle build failed"
             exit 1
           fi
-          echo "::endgroup::"
-          echo "::group::Locate APK"
           find . -name "*.apk" 2>/dev/null
-          echo "::endgroup::"
 
       - name: Build Flutter APK
-        if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
+        if: steps.detect.outputs.PROJECT_TYPE == flutter
         shell: bash
         env:
-          GRADLE_OPTS: '-Xmx4g -XX:MaxMetaspaceSize=512m -Dorg.gradle.daemon=false'
+          GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=512m -Dorg.gradle.daemon=false"
         run: |
           set -o pipefail
           echo "::group::Build Flutter APK"
           cd workspace/${{ steps.detect.outputs.PROJECT_ROOT }}
 
-          # Patch Gradle version if needed
           GRADLE_PROP="android/gradle/wrapper/gradle-wrapper.properties"
           if [ -f "$GRADLE_PROP" ]; then
-            CURRENT_VER=$(grep 'distributionUrl' "$GRADLE_PROP" | grep -oP '\d+\.\d+(?=\.\d+-bin)' || true)
+            CURRENT_VER=$(grep "distributionUrl" "$GRADLE_PROP" | grep -o "[0-9]+\\.[0-9]+" | head -1 || true)
             echo "Gradle version: ${CURRENT_VER:-unknown}"
-            if [ -n "$CURRENT_VER" ]; then
-              MAJOR=$(echo "$CURRENT_VER" | cut -d. -f1)
-              MINOR=$(echo "$CURRENT_VER" | cut -d. -f2)
+            MAJOR=$(echo "$CURRENT_VER" | cut -d. -f1)
+            MINOR=$(echo "$CURRENT_VER" | cut -d. -f2)
+            if [ -n "$MAJOR" ] && [ -n "$MINOR" ]; then
               if [ "$MAJOR" -lt 8 ] || ([ "$MAJOR" -eq 8 ] && [ "$MINOR" -lt 10 ]); then
                 echo "Upgrading Gradle to 8.10"
-                sed -i 's|distributionUrl=.*|distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10-bin.zip|' "$GRADLE_PROP"
+                sed -i "s|distributionUrl=.*|distributionUrl=https:\\\/\\/services.gradle.org/distributions/gradle-8.10-bin.zip|" "$GRADLE_PROP"
               fi
             fi
           fi
 
-          # Patch NDK if hardcoded (NDK 26.x causes OOM on GitHub runners)
           APP_BUILD="android/app/build.gradle"
           if [ -f "$APP_BUILD" ]; then
-            # Remove any hardcoded ndkVersion lines entirely
-            if grep -q 'ndkVersion' "$APP_BUILD"; then
-              echo "Removing hardcoded ndkVersion to prevent OOM"
-              sed -i '/^[[:space:]]*ndkVersion/d' "$APP_BUILD"
+            if grep -q "ndkVersion" "$APP_BUILD"; then
+              echo "Removing hardcoded ndkVersion"
+              sed -i "/^[[:space:]]*ndkVersion/d" "$APP_BUILD"
             fi
+            sed -i "s|com.android.support:multidex|androidx.multidex:multidex|g" "$APP_BUILD"
           fi
+          echo "org.gradle.jvmargs=-Xmx3g" >> android/gradle.properties
+          echo "android.useAndroidX=true" >> android/gradle.properties
+          echo "android.enableJetifier=true" >> android/gradle.properties
 
-          # Add gradle.properties to limit memory and enable AndroidX migration
-          echo 'org.gradle.jvmargs=-Xmx3g' >> android/gradle.properties
-          echo 'android.useAndroidX=true' >> android/gradle.properties
-          echo 'android.enableJetifier=true' >> android/gradle.properties
-
-          # Fix old android.support dependency references
-          if [ -f "$APP_BUILD" ]; then
-            sed -i 's|com.android.support:multidex|androidx.multidex:multidex|g' "$APP_BUILD"
-          fi
-
-          # Get dependencies
           echo "--- flutter pub get ---"
-          flutter pub get 2>&1 | tail -30
+          flutter pub get 2>&1 | tail -20
           echo "--- end pub get ---"
 
-          # Patch plugins in .pub-cache for compatibility
-          echo "--- Patching plugins ---"
           PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
-          # Fix jni plugin: remove invalid 'flutter' block that breaks LibraryExtension
-          find "$PUB_CACHE/hosted" -maxdepth 4 -path "*/android/build.gradle" -type f 2>/dev/null | while read f; do
-            if grep -q 'flutter[[:space:]]*{' "$f" 2>/dev/null; then
-              echo "Patching flutter block in $(echo $f | sed "s|$PUB_CACHE/hosted/||")"
-              sed -i '/^[[:space:]]*flutter[[:space:]]*{/,/}/d' "$f"
-            fi
+          PATCHED=0
+          for F in $(grep -rl "flutter " "$PUB_CACHE/hosted" --include="*.gradle" 2>/dev/null); do
+            echo "Patching: $F"
+            sed -i "/^[[:space:]]*flutter[[:space:]]*{/,/}/d" "$F"
+            PATCHED=$((PATCHED + 1))
           done
-          # Fix missing namespace in plugins (AGP 8+ requirement)
-          find "$PUB_CACHE/hosted" -maxdepth 4 -path "*/android/build.gradle" -type f 2>/dev/null | while read f; do
-            if ! grep -q 'namespace' "$f"; then
-              PDIR=$(basename $(dirname $(dirname "$f")))
-              echo "Adding namespace fallback for plugin: $PDIR"
-              sed -i "1s|^|def _novaNs = \"${PDIR}\"\n|" "$f"
-              sed -i '/^android {/a\    if (namespace == null) namespace = _novaNs' "$f"
-            fi
-          done
-          echo "--- Done patching ---"
+          echo "Patched $PATCHED files with flutter block"
 
-          # Build release APK
           echo "--- flutter build apk --release ---"
           BUILD_LOG="$RUNNER_TEMP/flutter_build.log"
           set +e
           flutter build apk --release 2>&1 | tee "$BUILD_LOG"
           BUILD_EXIT=${PIPESTATUS[0]}
           set -e
-          echo "--- end build (exit $BUILD_EXIT) ---"
-          # Always upload build log as artifact
+          echo "--- exit code: $BUILD_EXIT ---"
           mkdir -p "$RUNNER_TEMP/build-artifacts"
-          cp "$BUILD_LOG" "$RUNNER_TEMP/build-artifacts/build.log" 2>/dev/null || true
+          cp "$BUILD_LOG" "$RUNNER_TEMP/build-artifacts/build.log"
           if [ "$BUILD_EXIT" -ne 0 ]; then
-            echo "## Flutter Build Failed" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -80 "$BUILD_LOG" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "::error::Flutter build failed"
+            ERROR_FILE="$RUNNER_TEMP/build-error.txt"
+            tail -80 "$BUILD_LOG" > "$ERROR_FILE"
+            curl -sf -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: text/plain" \
+              --data-binary "@$ERROR_FILE" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ inputs.release_id }}/assets?name=build-error.txt" || true
             exit 1
           fi
-
           echo "::group::Locate APK"
           find . -name "*.apk" 2>/dev/null
           echo "::endgroup::"
 
-      - name: Upload build log
+      - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
           path: ${{ runner.temp }}/build-artifacts/
+
 
       - name: Locate APK
         id: locate
@@ -362,7 +289,7 @@ jobs:
             APK_PATH=$(find . -name "*.apk" -print -quit 2>/dev/null)
           fi
           if [ -z "$APK_PATH" ]; then
-            echo "ERROR: No APK was generated by the build"
+            echo "ERROR: No APK found"
             exit 1
           fi
           APK_NAME=$(basename "$APK_PATH")
@@ -370,94 +297,52 @@ jobs:
           echo "APK_PATH=$APK_PATH" >> $GITHUB_OUTPUT
           echo "APK_NAME=$APK_NAME" >> $GITHUB_OUTPUT
           echo "APK_SIZE=$APK_SIZE" >> $GITHUB_OUTPUT
-          echo "Found APK: $APK_PATH ($APK_SIZE bytes)"
 
       - name: Verify APK
         run: |
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: APK file not found at $APK"
-            exit 1
-          fi
+          if [ ! -f "$APK" ]; then echo "ERROR: APK not found"; exit 1; fi
           APK_SIZE=$(stat -c%s "$APK" 2>/dev/null || stat -f%z "$APK")
-          if [ "$APK_SIZE" -lt 10000 ]; then
-            echo "ERROR: APK is suspiciously small ($APK_SIZE bytes)"
-            exit 1
-          fi
+          if [ "$APK_SIZE" -lt 10000 ]; then echo "ERROR: APK too small ($APK_SIZE bytes)"; exit 1; fi
           file "$APK"
-          echo "APK verified: $APK_NAME ($APK_SIZE bytes)"
 
-      - name: Sign APK (generate new key)
-        if: inputs.signing_mode == 'generate'
+      - name: Sign APK generate new key
+        if: inputs.signing_mode == generate
         id: sign-generate
         run: |
-          echo "::group::Generate signing key and sign APK"
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
           KEYSTORE_PATH="$RUNNER_TEMP/nova-signing.jks"
-          KEYSTORE_PASS="nova_$(head /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 24)"
+          KEYSTORE_PASS="nova_$(head /dev/urandom | tr -dc a-zA-Z0-9 | head -c 24)"
           KEY_PASS="$KEYSTORE_PASS"
           KEY_ALIAS="nova"
-          keytool -genkeypair \
-            -v \
-            -keystore "$KEYSTORE_PATH" \
-            -alias "$KEY_ALIAS" \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass "$KEYSTORE_PASS" \
-            -keypass "$KEY_PASS" \
-            -dname "CN=Nova Builder, OU=Build, O=Nova, L=Unknown, ST=Unknown, C=US"
-          ZIPALIGN="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/zipalign"
-          ALIGNED_APK="$RUNNER_TEMP/aligned.apk"
-          "$ZIPALIGN" -v 4 "$APK" "$ALIGNED_APK"
+          keytool -genkeypair -v -keystore "$KEYSTORE_PATH" -alias "$KEY_ALIAS" \n            -keyalg RSA -keysize 2048 -validity 10000 \n            -storepass "$KEYSTORE_PASS" -keypass "$KEY_PASS" \n            -dname "CN=Nova Builder, OU=Build, O=Nova, L=Unknown, ST=Unknown, C=US"
+          BT="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/zipalign"
+          "$BT" -v 4 "$APK" "$RUNNER_TEMP/aligned.apk"
           APKSIGNER="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/apksigner"
-          SIGNED_APK="$RUNNER_TEMP/signed.apk"
-          "$APKSIGNER" sign \
-            --ks "$KEYSTORE_PATH" \
-            --ks-pass "pass:$KEYSTORE_PASS" \
-            --ks-key-alias "$KEY_ALIAS" \
-            --key-pass "pass:$KEY_PASS" \
-            --out "$SIGNED_APK" \
-            "$ALIGNED_APK"
-          "$APKSIGNER" verify --verbose "$SIGNED_APK" 2>&1 | head -20
-          cp "$SIGNED_APK" "$APK"
-          printf 'storeFile=nova-signing.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
-            "$KEYSTORE_PASS" "$KEY_ALIAS" "$KEY_PASS" > "$RUNNER_TEMP/keystore-properties.txt"
-          echo "APK signed successfully with new key"
-          echo "::endgroup::"
+          "$APKSIGNER" sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEYSTORE_PASS" \n            --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASS" \n            --out "$RUNNER_TEMP/signed.apk" "$RUNNER_TEMP/aligned.apk"
+          "$APKSIGNER" verify --verbose "$RUNNER_TEMP/signed.apk" 2>&1 | head -20
+          cp "$RUNNER_TEMP/signed.apk" "$APK"
+          printf "storeFile=nova-signing.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n" \n            "$KEYSTORE_PASS" "$KEY_ALIAS" "$KEY_PASS" > "$RUNNER_TEMP/keystore-properties.txt"
 
-      - name: Sign APK (use existing key)
-        if: inputs.signing_mode == 'existing'
+      - name: Sign APK use existing key
+        if: inputs.signing_mode == existing
         id: sign-existing
         run: |
-          echo "::group::Sign APK with existing key"
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
           echo "${{ secrets.SIGNING_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/existing.jks"
           KEYSTORE_PASS="${{ secrets.KEYSTORE_PASSWORD }}"
           KEY_PASS="${{ secrets.KEY_PASSWORD }}"
           KEY_ALIAS="${{ secrets.KEY_ALIAS }}"
           if [ -z "$KEYSTORE_PASS" ] || [ -z "$KEY_ALIAS" ]; then
-            echo "ERROR: Signing secrets not configured."
-            echo "Go to repo Settings > Secrets and variables > Actions"
-            echo "Add: SIGNING_KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_PASSWORD, KEY_ALIAS"
+            echo "ERROR: Signing secrets not configured"
             exit 1
           fi
-          ZIPALIGN="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/zipalign"
-          ALIGNED_APK="$RUNNER_TEMP/aligned.apk"
-          "$ZIPALIGN" -v 4 "$APK" "$ALIGNED_APK"
+          BT="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/zipalign"
+          "$BT" -v 4 "$APK" "$RUNNER_TEMP/aligned.apk"
           APKSIGNER="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/apksigner"
-          SIGNED_APK="$RUNNER_TEMP/signed.apk"
-          "$APKSIGNER" sign \
-            --ks "$RUNNER_TEMP/existing.jks" \
-            --ks-pass "pass:$KEYSTORE_PASS" \
-            --ks-key-alias "$KEY_ALIAS" \
-            --key-pass "pass:$KEY_PASS" \
-            --out "$SIGNED_APK" \
-            "$ALIGNED_APK"
-          "$APKSIGNER" verify --verbose "$SIGNED_APK" 2>&1 | head -20
-          cp "$SIGNED_APK" "$APK"
-          echo "APK signed with existing key"
-          echo "::endgroup::"
+          "$APKSIGNER" sign --ks "$RUNNER_TEMP/existing.jks" --ks-pass "pass:$KEYSTORE_PASS" \n            --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASS" \n            --out "$RUNNER_TEMP/signed.apk" "$RUNNER_TEMP/aligned.apk"
+          "$APKSIGNER" verify --verbose "$RUNNER_TEMP/signed.apk" 2>&1 | head -20
+          cp "$RUNNER_TEMP/signed.apk" "$APK"
 
       - name: Upload APK to release
         env:
@@ -465,30 +350,22 @@ jobs:
         run: |
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
           RELEASE_ID="${{ inputs.release_id }}"
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary "@$APK" \
+          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/octet-stream" --data-binary "@$APK" \
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=${{ steps.locate.outputs.APK_NAME }}"
-          echo "APK uploaded"
 
-      - name: Upload signing key (generate mode)
-        if: inputs.signing_mode == 'generate'
+      - name: Upload signing key
+        if: inputs.signing_mode == generate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           RELEASE_ID="${{ inputs.release_id }}"
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary "@$RUNNER_TEMP/nova-signing.jks" \
+          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/octet-stream" --data-binary "@$RUNNER_TEMP/nova-signing.jks" \
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=nova-signing.jks"
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: text/plain" \
-            --data-binary "@$RUNNER_TEMP/keystore-properties.txt" \
+          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: text/plain" --data-binary "@$RUNNER_TEMP/keystore-properties.txt" \
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=keystore-properties.txt"
-          echo "Signing key uploaded"
 
       - name: Publish release
         env:
@@ -500,28 +377,20 @@ jobs:
           APK_SIZE="${{ steps.locate.outputs.APK_SIZE }}"
           EXTRA_WARN=""
           if [ "$SIGNING_MODE" = "generate" ]; then
-            EXTRA_WARN=". Save the signing key assets (nova-signing.jks and keystore-properties.txt) for future app updates."
+            EXTRA_WARN=". Save the signing key assets for future updates."
           fi
-          curl -s -X PATCH \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n \
-              --arg p "${{ steps.detect.outputs.PROJECT_TYPE }}" \
-              --arg a "$APK_NAME" \
-              --arg s "$APK_SIZE" \
-              --arg m "$SIGNING_MODE" \
-              --arg w "$EXTRA_WARN" \
-              '{draft:false, body: ("APK build succeeded.\n\n- Project: " + $p + "\n- APK: " + $a + " (" + $s + " bytes)\n- Signing: " + $m + $w)}')" \
+            -d "$(jq -n --arg p "${{ steps.detect.outputs.PROJECT_TYPE }}" --arg a "$APK_NAME" --arg s "$APK_SIZE" --arg m "$SIGNING_MODE" --arg w "$EXTRA_WARN" '{"draft":false,"body":"APK build succeeded.\n\n- Project: " + $p + "\n- APK: " + $a + " (" + $s + " bytes)\n- Signing: " + $m + $w}')" \
             "${{ github.api_url }}/repos/${{ github.repository }}/releases/$RELEASE_ID"
-          echo "Release published"
 
       - name: Build summary
         if: always()
         run: |
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Project Type**: ${{ steps.detect.outputs.PROJECT_TYPE }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Project Root**: ${{ steps.detect.outputs.PROJECT_ROOT }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Type**: ${{ steps.detect.outputs.PROJECT_TYPE }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Root**: ${{ steps.detect.outputs.PROJECT_ROOT }}" >> $GITHUB_STEP_SUMMARY
           echo "- **APK**: ${{ steps.locate.outputs.APK_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **APK Size**: ${{ steps.locate.outputs.APK_SIZE }} bytes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: ${{ steps.locate.outputs.APK_SIZE }} bytes" >> $GITHUB_STEP_SUMMARY
           echo "- **Signing**: ${{ inputs.signing_mode }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Release**: #${{ inputs.release_id }}" >> $GITHUB_STEP_SUMMARY
