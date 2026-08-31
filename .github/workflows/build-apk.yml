@@ -307,7 +307,7 @@ jobs:
           file "$APK"
 
       - name: Sign APK generate new key
-        if: inputs.signing_mode == generate
+        if: ${{ inputs.signing_mode }} == generate }}
         id: sign-generate
         run: |
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
@@ -325,7 +325,7 @@ jobs:
           printf "storeFile=nova-signing.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n" \n            "$KEYSTORE_PASS" "$KEY_ALIAS" "$KEY_PASS" > "$RUNNER_TEMP/keystore-properties.txt"
 
       - name: Sign APK use existing key
-        if: inputs.signing_mode == existing
+        if: ${{ inputs.signing_mode }} == existing }}
         id: sign-existing
         run: |
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
@@ -355,7 +355,7 @@ jobs:
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=${{ steps.locate.outputs.APK_NAME }}"
 
       - name: Upload signing key
-        if: inputs.signing_mode == generate
+        if: ${{ inputs.signing_mode }} == generate }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
