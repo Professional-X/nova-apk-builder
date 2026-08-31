@@ -159,7 +159,7 @@ jobs:
         if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          flutter-version: '3.29.3'
           channel: 'stable'
           cache: true
 
@@ -264,6 +264,28 @@ jobs:
           echo "--- flutter pub get ---"
           flutter pub get 2>&1 | tail -30
           echo "--- end pub get ---"
+
+          # Patch plugins in .pub-cache for compatibility
+          echo "--- Patching plugins ---"
+          PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
+          # Fix jni plugin: remove invalid 'flutter' block that breaks LibraryExtension
+          find "$PUB_CACHE/hosted" -maxdepth 4 -path "*/android/build.gradle" -type f 2>/dev/null | while read f; do
+            if grep -q 'flutter[[:space:]]*{' "$f" 2>/dev/null; then
+              echo "Patching flutter block in $(echo $f | sed "s|$PUB_CACHE/hosted/||")"
+              sed -i '/^[[:space:]]*flutter[[:space:]]*{/,/}/d' "$f"
+            fi
+          done
+          # Fix missing namespace in plugins (AGP 8+ requirement)
+          find "$PUB_CACHE/hosted" -maxdepth 4 -path "*/android/build.gradle" -type f 2>/dev/null | while read f; do
+            if ! grep -q 'namespace' "$f"; then
+              PDIR=$(basename $(dirname $(dirname "$f")))
+              echo "Adding namespace fallback for plugin: $PDIR"
+              sed -i '1s|^|def _novaNs = "'"$PDIR"'"
+|' "$f"
+              sed -i '/^android {/a\    if (namespace == null) namespace = _novaNs' "$f"
+            fi
+          done
+          echo "--- Done patching ---"
 
           # Build release APK
           echo "--- flutter build apk --release ---"
