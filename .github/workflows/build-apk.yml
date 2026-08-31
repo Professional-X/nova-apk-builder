@@ -280,8 +280,7 @@ jobs:
             if ! grep -q 'namespace' "$f"; then
               PDIR=$(basename $(dirname $(dirname "$f")))
               echo "Adding namespace fallback for plugin: $PDIR"
-              sed -i '1s|^|def _novaNs = "'"$PDIR"'"
-|' "$f"
+              sed -i "1s|^|def _novaNs = \"${PDIR}\"\n|" "$f"
               sed -i '/^android {/a\    if (namespace == null) namespace = _novaNs' "$f"
             fi
           done
