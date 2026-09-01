@@ -19,9 +19,11 @@ on:
 permissions:
   contents: write
   actions: read
+
 env:
   JAVA_DIST: temurin
   JAVA_VERSION: "17"
+
 jobs:
   build:
     name: Build and Sign APK
@@ -79,11 +81,11 @@ jobs:
             echo "ERROR: Not a valid ZIP file"
             exit 1
           fi
-          if unzip -l source.zip | grep -qE "\.\.\\\\.\\."; then
+          if unzip -l source.zip | grep -qE "\.\.\/"; then
             echo "ERROR: Path traversal detected"
             exit 1
           fi
-          ENTRY_COUNT=$(unzip -l source.zip | tail -1 | awk "{print \\$2}")
+          ENTRY_COUNT=$(unzip -l source.zip | tail -1 | awk "{print \$2}")
           ENTRY_COUNT=${ENTRY_COUNT:-0}
           if [ "$ENTRY_COUNT" -gt 50000 ]; then
             echo "ERROR: Too many entries ($ENTRY_COUNT)"
@@ -134,14 +136,14 @@ jobs:
           echo "Detected: $PROJECT_TYPE at $PROJECT_ROOT"
 
       - name: Setup Java
-        if: ${{ steps.detect.outputs.PROJECT_TYPE == 'android' }}
+        if: steps.detect.outputs.PROJECT_TYPE == 'android'
         uses: actions/setup-java@v4
         with:
           distribution: ${{ env.JAVA_DIST }}
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Setup Flutter
-        if: ${{ steps.detect.outputs.PROJECT_TYPE == 'flutter' }}
+        if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.29.3"
@@ -149,18 +151,18 @@ jobs:
           cache: true
 
       - name: Setup Java for Flutter
-        if: ${{ steps.detect.outputs.PROJECT_TYPE == 'flutter' }}
+        if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
         uses: actions/setup-java@v4
         with:
           distribution: ${{ env.JAVA_DIST }}
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Setup Android SDK
-        if: ${{ steps.detect.outputs.PROJECT_TYPE == 'android' }} || steps.detect.outputs.PROJECT_TYPE == flutter
+        if: steps.detect.outputs.PROJECT_TYPE == 'android' || steps.detect.outputs.PROJECT_TYPE == 'flutter'
         uses: android-actions/setup-android@v3
 
       - name: Build Android APK
-        if: ${{ steps.detect.outputs.PROJECT_TYPE == 'android' }}
+        if: steps.detect.outputs.PROJECT_TYPE == 'android'
         shell: bash
         run: |
           set -o pipefail
@@ -193,7 +195,7 @@ jobs:
           find . -name "*.apk" 2>/dev/null
 
       - name: Build Flutter APK
-        if: ${{ steps.detect.outputs.PROJECT_TYPE == 'flutter' }}
+        if: steps.detect.outputs.PROJECT_TYPE == 'flutter'
         shell: bash
         env:
           GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=512m -Dorg.gradle.daemon=false"
@@ -204,14 +206,14 @@ jobs:
 
           GRADLE_PROP="android/gradle/wrapper/gradle-wrapper.properties"
           if [ -f "$GRADLE_PROP" ]; then
-            CURRENT_VER=$(grep "distributionUrl" "$GRADLE_PROP" | grep -o "[0-9]+\\.[0-9]+" | head -1 || true)
+            CURRENT_VER=$(grep "distributionUrl" "$GRADLE_PROP" | grep -o "[0-9]+\.[0-9]+" | head -1 || true)
             echo "Gradle version: ${CURRENT_VER:-unknown}"
             MAJOR=$(echo "$CURRENT_VER" | cut -d. -f1)
             MINOR=$(echo "$CURRENT_VER" | cut -d. -f2)
             if [ -n "$MAJOR" ] && [ -n "$MINOR" ]; then
               if [ "$MAJOR" -lt 8 ] || ([ "$MAJOR" -eq 8 ] && [ "$MINOR" -lt 10 ]); then
                 echo "Upgrading Gradle to 8.10"
-                sed -i "s|distributionUrl=.*|distributionUrl=https:\\\/\\/services.gradle.org/distributions/gradle-8.10-bin.zip|" "$GRADLE_PROP"
+                sed -i "s|distributionUrl=.*|distributionUrl=https:\/\/services.gradle.org/distributions/gradle-8.10-bin.zip|" "$GRADLE_PROP"
               fi
             fi
           fi
@@ -272,7 +274,6 @@ jobs:
           name: build-log
           path: ${{ runner.temp }}/build-artifacts/
 
-
       - name: Locate APK
         id: locate
         run: |
@@ -307,7 +308,7 @@ jobs:
           file "$APK"
 
       - name: Sign APK generate new key
-        if: ${{ inputs.signing_mode }} == generate }}
+        if: inputs.signing_mode == 'generate'
         id: sign-generate
         run: |
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
@@ -315,17 +316,29 @@ jobs:
           KEYSTORE_PASS="nova_$(head /dev/urandom | tr -dc a-zA-Z0-9 | head -c 24)"
           KEY_PASS="$KEYSTORE_PASS"
           KEY_ALIAS="nova"
-          keytool -genkeypair -v -keystore "$KEYSTORE_PATH" -alias "$KEY_ALIAS" \n            -keyalg RSA -keysize 2048 -validity 10000 \n            -storepass "$KEYSTORE_PASS" -keypass "$KEY_PASS" \n            -dname "CN=Nova Builder, OU=Build, O=Nova, L=Unknown, ST=Unknown, C=US"
-          BT="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/zipalign"
+          keytool -genkeypair -v \
+            -keystore "$KEYSTORE_PATH" \
+            -alias "$KEY_ALIAS" \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$KEYSTORE_PASS" \
+            -keypass "$KEY_PASS" \
+            -dname "CN=Nova Builder, OU=Build, O=Nova, L=Unknown, ST=Unknown, C=US"
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools/" | tail -1)/zipalign"
           "$BT" -v 4 "$APK" "$RUNNER_TEMP/aligned.apk"
-          APKSIGNER="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/apksigner"
-          "$APKSIGNER" sign --ks "$KEYSTORE_PATH" --ks-pass "pass:$KEYSTORE_PASS" \n            --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASS" \n            --out "$RUNNER_TEMP/signed.apk" "$RUNNER_TEMP/aligned.apk"
+          APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools/" | tail -1)/apksigner"
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE_PATH" \
+            --ks-pass "pass:$KEYSTORE_PASS" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --key-pass "pass:$KEY_PASS" \
+            --out "$RUNNER_TEMP/signed.apk" \
+            "$RUNNER_TEMP/aligned.apk"
           "$APKSIGNER" verify --verbose "$RUNNER_TEMP/signed.apk" 2>&1 | head -20
           cp "$RUNNER_TEMP/signed.apk" "$APK"
-          printf "storeFile=nova-signing.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n" \n            "$KEYSTORE_PASS" "$KEY_ALIAS" "$KEY_PASS" > "$RUNNER_TEMP/keystore-properties.txt"
+          printf "storeFile=nova-signing.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n" "$KEYSTORE_PASS" "$KEY_ALIAS" "$KEY_PASS" > "$RUNNER_TEMP/keystore-properties.txt"
 
       - name: Sign APK use existing key
-        if: ${{ inputs.signing_mode }} == existing }}
+        if: inputs.signing_mode == 'existing'
         id: sign-existing
         run: |
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
@@ -337,10 +350,16 @@ jobs:
             echo "ERROR: Signing secrets not configured"
             exit 1
           fi
-          BT="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/zipalign"
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools/" | tail -1)/zipalign"
           "$BT" -v 4 "$APK" "$RUNNER_TEMP/aligned.apk"
-          APKSIGNER="$ANDROID_HOME/build-tools/"$(ls "$ANDROID_HOME/build-tools/" | tail -1)"/apksigner"
-          "$APKSIGNER" sign --ks "$RUNNER_TEMP/existing.jks" --ks-pass "pass:$KEYSTORE_PASS" \n            --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASS" \n            --out "$RUNNER_TEMP/signed.apk" "$RUNNER_TEMP/aligned.apk"
+          APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools/" | tail -1)/apksigner"
+          "$APKSIGNER" sign \
+            --ks "$RUNNER_TEMP/existing.jks" \
+            --ks-pass "pass:$KEYSTORE_PASS" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --key-pass "pass:$KEY_PASS" \
+            --out "$RUNNER_TEMP/signed.apk" \
+            "$RUNNER_TEMP/aligned.apk"
           "$APKSIGNER" verify --verbose "$RUNNER_TEMP/signed.apk" 2>&1 | head -20
           cp "$RUNNER_TEMP/signed.apk" "$APK"
 
@@ -350,21 +369,27 @@ jobs:
         run: |
           APK="workspace/${{ steps.detect.outputs.PROJECT_ROOT }}/${{ steps.locate.outputs.APK_PATH }}"
           RELEASE_ID="${{ inputs.release_id }}"
-          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/octet-stream" --data-binary "@$APK" \
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$APK" \
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=${{ steps.locate.outputs.APK_NAME }}"
 
       - name: Upload signing key
-        if: ${{ inputs.signing_mode }} == generate }}
+        if: inputs.signing_mode == 'generate'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           RELEASE_ID="${{ inputs.release_id }}"
-          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/octet-stream" --data-binary "@$RUNNER_TEMP/nova-signing.jks" \
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$RUNNER_TEMP/nova-signing.jks" \
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=nova-signing.jks"
-          curl -s -X POST -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: text/plain" --data-binary "@$RUNNER_TEMP/keystore-properties.txt" \
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: text/plain" \
+            --data-binary "@$RUNNER_TEMP/keystore-properties.txt" \
             "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=keystore-properties.txt"
 
       - name: Publish release
@@ -375,13 +400,22 @@ jobs:
           SIGNING_MODE="${{ inputs.signing_mode }}"
           APK_NAME="${{ steps.locate.outputs.APK_NAME }}"
           APK_SIZE="${{ steps.locate.outputs.APK_SIZE }}"
-          EXTRA_WARN=""
-          if [ "$SIGNING_MODE" = "generate" ]; then
-            EXTRA_WARN=". Save the signing key assets for future updates."
-          fi
-          curl -s -X PATCH -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          BODY_FILE="$RUNNER_TEMP/release-body.txt"
+          {
+            echo "APK build succeeded."
+            echo ""
+            echo "- Project: ${{ steps.detect.outputs.PROJECT_TYPE }}"
+            echo "- APK: ${APK_NAME} (${APK_SIZE} bytes)"
+            echo "- Signing: ${SIGNING_MODE}"
+            if [ "$SIGNING_MODE" = "generate" ]; then
+              echo ". Save the signing key assets for future updates."
+            fi
+          } > "$BODY_FILE"
+          BODY_JSON=$(jq -Rs '.' "$BODY_FILE")
+          curl -s -X PATCH \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n --arg p "${{ steps.detect.outputs.PROJECT_TYPE }}" --arg a "$APK_NAME" --arg s "$APK_SIZE" --arg m "$SIGNING_MODE" --arg w "$EXTRA_WARN" '{"draft":false,"body":"APK build succeeded.\n\n- Project: " + $p + "\n- APK: " + $a + " (" + $s + " bytes)\n- Signing: " + $m + $w}')" \
+            -d "{\"draft\":false,\"body\":${BODY_JSON}}" \
             "${{ github.api_url }}/repos/${{ github.repository }}/releases/$RELEASE_ID"
 
       - name: Build summary
