@@ -410,11 +410,10 @@ jobs:
           # ── Patch: remove GoogleServicesStrategy import that may fail without proper classpath ──
           for F in $(find . -maxdepth 4 \( -name "build.gradle.kts" \) 2>/dev/null | head -20); do
             if grep -q 'GoogleServicesPlugin.MissingGoogleServicesStrategy' "$F" 2>/dev/null; then
-              echo "Removing GoogleServicesPlugin import from $F"
+              echo "Removing GoogleServicesPlugin import and googleServices config block from $F"
               sed -i '/GoogleServicesPlugin\.MissingGoogleServicesStrategy/d' "$F"
-              # Also replace the googleServices { missingGoogleServicesStrategy = ... } block
-              # with a safe version that doesn't need the import
-              sed -i 's/googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }/googleServices { missingGoogleServicesStrategy = "WARN" }/' "$F" 2>/dev/null || true
+              # Remove the googleServices { missingGoogleServicesStrategy = ... } line entirely
+              sed -i '/googleServices { missingGoogleServicesStrategy/d' "$F"
             fi
           done
           # ── Patch: generate gradlew + wrapper jar if missing ──
