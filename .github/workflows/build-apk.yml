@@ -387,12 +387,20 @@ jobs:
             "configuration_version": "1"
           }
           GSEOF
-                # Update package name in google-services.json to match manifest
-                if [ -f "app/src/main/AndroidManifest.xml" ]; then
-                  MPKG=$(grep -oP 'package\s*=\s*"[^"]+"' app/src/main/AndroidManifest.xml | head -1 | grep -oP '"[^"]+"' | tr -d '"')
-                  if [ -n "$MPKG" ]; then
-                    sed -i "s/\"package_name\": \"com.example\"/\"package_name\": \"$MPKG\"/" app/google-services.json
-                  fi
+                # Update package name in google-services.json to match applicationId
+                APP_ID=""
+                # First check applicationId in build.gradle.kts (takes precedence)
+                for BG in $(find . -maxdepth 4 \( -name "build.gradle" -o -name "build.gradle.kts" \) 2>/dev/null | head -10); do
+                  APP_ID=$(grep -oP 'applicationId\s*=\s*"\K[^"]+' "$BG" 2>/dev/null | head -1 || true)
+                  [ -n "$APP_ID" ] && break
+                done
+                # Fallback to manifest package
+                if [ -z "$APP_ID" ] && [ -f "app/src/main/AndroidManifest.xml" ]; then
+                  APP_ID=$(grep -oP 'package\s*=\s*"[^"]+"' app/src/main/AndroidManifest.xml | head -1 | grep -oP '"[^"]+"' | tr -d '"')
+                fi
+                if [ -n "$APP_ID" ]; then
+                  echo "Setting google-services.json package_name to $APP_ID"
+                  sed -i "s/\"package_name\": \"com.example\"/\"package_name\": \"$APP_ID\"/" app/google-services.json
                 fi
                 break
               fi
