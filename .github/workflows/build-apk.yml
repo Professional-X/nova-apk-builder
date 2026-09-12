@@ -62,7 +62,9 @@ jobs:
       # ──────────────────────────────────────────────
       - name: Extract and analyze project
         id: info
+        shell: bash
         run: |
+          set +e
           mkdir -p workspace && cd workspace && unzip -o ../source.zip && cd ..
           cd workspace
           ROOT="" && TYPE=""
@@ -85,15 +87,27 @@ jobs:
           echo "ROOT=$ROOT" >> $GITHUB_OUTPUT
           echo "TYPE=$TYPE" >> $GITHUB_OUTPUT
           echo "Project: $TYPE at $ROOT"
-          # ── Detect AGP version ──
+          # ── Detect AGP version (try multiple sources) ──
           AGP=""
-          for F in $(find "$ROOT" -maxdepth 3 -name "*.gradle" -o -name "*.gradle.kts" 2>/dev/null | head -20); do
+          GRADLE_FILES=$(find "$ROOT" -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) 2>/dev/null | head -20)
+          for F in $GRADLE_FILES; do
             V=$(grep -oP 'com\.android\.tools\.build:gradle:\K[\d]+\.[\d]+(\.[\d]+)?' "$F" 2>/dev/null | head -1)
             [ -n "$V" ] && AGP="$V" && break
           done
           if [ -z "$AGP" ]; then
-            for F in $(find "$ROOT" -maxdepth 2 -name "settings.gradle" -o -name "settings.gradle.kts" 2>/dev/null | head -5); do
+            SETTINGS_FILES=$(find "$ROOT" -maxdepth 2 \( -name "settings.gradle" -o -name "settings.gradle.kts" \) 2>/dev/null | head -5)
+            for F in $SETTINGS_FILES; do
               V=$(grep "com.android.application" "$F" 2>/dev/null | grep -oP '[\d]+\.[\d]+(\.[\d]+)?' | head -1)
+              [ -n "$V" ] && AGP="$V" && break
+            done
+          fi
+          if [ -z "$AGP" ]; then
+            TOML_FILES=$(find "$ROOT" -maxdepth 3 -name "libs.versions.toml" 2>/dev/null | head -5)
+            for F in $TOML_FILES; do
+              V=$(grep -oP '^agp\s*=\s*"\K[\d]+\.[\d]+(\.[\d]+)?' "$F" 2>/dev/null | head -1)
+              [ -z "$V" ] && V=$(grep -oP '^android-gradle-plugin\s*=\s*"\K[\d]+\.[\d]+(\.[\d]+)?' "$F" 2>/dev/null | head -1)
+              [ -z "$V" ] && V=$(grep -A1 'com.android.application' "$F" 2>/dev/null | grep -oP '[\d]+\.[\d]+(\.[\d]+)?' | head -1)
+              [ -z "$V" ] && V=$(grep -oP 'agp\s*=\s*"\K[\d]+\.[\d]+(\.[\d]+)?' "$F" 2>/dev/null | head -1)
               [ -n "$V" ] && AGP="$V" && break
             done
           fi
@@ -112,22 +126,24 @@ jobs:
           COMPILE_SDKS=""
           BUILD_TOOLS=""
           NDK_VERS=""
-          for F in $(find "$ROOT" -maxdepth 4 -name "*.gradle" -o -name "*.gradle.kts" 2>/dev/null | head -30); do
-            CS=$(grep -oP '(?:compileSdk|compileSdkVersion)\s*=?\s*["\x27]?\K\d+' "$F" 2>/dev/null)
+          ALL_GRADLE=$(find "$ROOT" -maxdepth 4 \( -name "*.gradle" -o -name "*.gradle.kts" \) 2>/dev/null | head -30)
+          for F in $ALL_GRADLE; do
+            CS=$(grep -oP '(?:compileSdk|compileSdkVersion)\s*=?\s*["\x27]?\K\d+' "$F" 2>/dev/null || true)
             COMPILE_SDKS="$COMPILE_SDKS $CS"
-            BT=$(grep -oP 'buildToolsVersion\s*=?\s*["\x27]\K[\d.]+' "$F" 2>/dev/null)
+            BT=$(grep -oP 'buildToolsVersion\s*=?\s*["\x27]\K[\d.]+' "$F" 2>/dev/null || true)
             BUILD_TOOLS="$BUILD_TOOLS $BT"
-            NK=$(grep -oP 'ndkVersion\s*=?\s*["\x27]\K[\d.]+' "$F" 2>/dev/null)
+            NK=$(grep -oP 'ndkVersion\s*=?\s*["\x27]\K[\d.]+' "$F" 2>/dev/null || true)
             NDK_VERS="$NDK_VERS $NK"
           done
           # Also check gradle.properties for COMPILE_SDK
-          for F in $(find "$ROOT" -maxdepth 2 -name "gradle.properties" 2>/dev/null | head -5); do
-            CS=$(grep -oP 'COMPILE_SDK\s*=?\s*\K\d+' "$F" 2>/dev/null)
+          PROP_FILES=$(find "$ROOT" -maxdepth 2 -name "gradle.properties" 2>/dev/null | head -5)
+          for F in $PROP_FILES; do
+            CS=$(grep -oP 'COMPILE_SDK\s*=?\s*\K\d+' "$F" 2>/dev/null || true)
             COMPILE_SDKS="$COMPILE_SDKS $CS"
           done
-          COMPILE_SDKS=$(echo $COMPILE_SDKS | tr ' ' $'\n' | sort -u | grep -v '^$' | tr $'\n' ' ')
-          BUILD_TOOLS=$(echo $BUILD_TOOLS | tr ' ' $'\n' | sort -u | grep -v '^$' | tr $'\n' ' ')
-          NDK_VERS=$(echo $NDK_VERS | tr ' ' $'\n' | sort -u | grep -v '^$' | tr $'\n' ' ')
+          COMPILE_SDKS=$(echo $COMPILE_SDKS | tr ' ' $'\n' | sort -u | grep -v '^$' | tr $'\n' ' ' || true)
+          BUILD_TOOLS=$(echo $BUILD_TOOLS | tr ' ' $'\n' | sort -u | grep -v '^$' | tr $'\n' ' ' || true)
+          NDK_VERS=$(echo $NDK_VERS | tr ' ' $'\n' | sort -u | grep -v '^$' | tr $'\n' ' ' || true)
           echo "SDK=$COMPILE_SDKS" >> $GITHUB_OUTPUT
           echo "BT=$BUILD_TOOLS" >> $GITHUB_OUTPUT
           echo "NDK=$NDK_VERS" >> $GITHUB_OUTPUT
@@ -138,7 +154,7 @@ jobs:
           GRADLE_VER=""
           GP="$ROOT/gradle/wrapper/gradle-wrapper.properties"
           if [ -f "$GP" ]; then
-            GRADLE_VER=$(grep "distributionUrl" "$GP" | grep -oP '[\d]+\.[\d]+(\.[\d]+)?' | head -1)
+            GRADLE_VER=$(grep "distributionUrl" "$GP" | grep -oP '[\d]+\.[\d]+(\.[\d]+)?' | head -1 || true)
           fi
           echo "GRADLE_VER=${GRADLE_VER:-unknown}" >> $GITHUB_OUTPUT
           echo "Gradle: ${GRADLE_VER:-unknown}"
@@ -149,32 +165,26 @@ jobs:
             AGP_MAJ=$(echo "$AGP" | cut -d. -f1)
             GR_MAJ=$(echo "$GRADLE_VER" | cut -d. -f1)
             GR_MIN=$(echo "$GRADLE_VER" | cut -d. -f2)
-            # AGP 8.x requires Gradle 8.x
-            if [ "$AGP_MAJ" -ge 8 ] && [ "$GR_MAJ" -lt 8 ]; then
+            if [ "$AGP_MAJ" -ge 8 ] 2>/dev/null && [ "$GR_MAJ" -lt 8 ] 2>/dev/null; then
               NEED_UPGRADE="yes"; TARGET_GRADLE="8.10.2"
             fi
-            # AGP 8.3+ requires Gradle 8.4+
-            if [ "$AGP_MAJ" -ge 8 ] && [ "$GR_MAJ" -eq 8 ] && [ "$GR_MIN" -lt 4 ]; then
+            if [ "$AGP_MAJ" -ge 8 ] 2>/dev/null && [ "$GR_MAJ" -eq 8 ] 2>/dev/null && [ "$GR_MIN" -lt 4 ] 2>/dev/null; then
               NEED_UPGRADE="yes"; TARGET_GRADLE="8.10.2"
             fi
-            # AGP 7.x requires Gradle 7.x
-            if [ "$AGP_MAJ" -eq 7 ] && [ "$GR_MAJ" -lt 7 ]; then
+            if [ "$AGP_MAJ" -eq 7 ] 2>/dev/null && [ "$GR_MAJ" -lt 7 ] 2>/dev/null; then
               NEED_UPGRADE="yes"; TARGET_GRADLE="7.6.4"
             fi
-            # AGP 7.4+ requires Gradle 7.5+
-            if [ "$AGP_MAJ" -eq 7 ] && [ "$GR_MAJ" -eq 7 ] && [ "$GR_MIN" -lt 5 ]; then
+            if [ "$AGP_MAJ" -eq 7 ] 2>/dev/null && [ "$GR_MAJ" -eq 7 ] 2>/dev/null && [ "$GR_MIN" -lt 5 ] 2>/dev/null; then
               NEED_UPGRADE="yes"; TARGET_GRADLE="7.6.4"
             fi
-            # AGP 4-6 requires Gradle 6+
-            if [ "$AGP_MAJ" -ge 4 ] && [ "$AGP_MAJ" -le 6 ] && [ "$GR_MAJ" -lt 6 ]; then
+            if [ "$AGP_MAJ" -ge 4 ] 2>/dev/null && [ "$AGP_MAJ" -le 6 ] 2>/dev/null && [ "$GR_MAJ" -lt 6 ] 2>/dev/null; then
               NEED_UPGRADE="yes"; TARGET_GRADLE="6.9.4"
             fi
           fi
-          # Flutter always needs modern Gradle
           if [ "$TYPE" = "flutter" ] && [ -n "$GRADLE_VER" ]; then
             GR_MAJ=$(echo "$GRADLE_VER" | cut -d. -f1)
             GR_MIN=$(echo "$GRADLE_VER" | cut -d. -f2)
-            if [ "$GR_MAJ" -lt 8 ] || { [ "$GR_MAJ" -eq 8 ] && [ "$GR_MIN" -lt 10 ]; }; then
+            if [ "$GR_MAJ" -lt 8 ] 2>/dev/null || { [ "$GR_MAJ" -eq 8 ] 2>/dev/null && [ "$GR_MIN" -lt 10 ] 2>/dev/null; }; then
               NEED_UPGRADE="yes"; TARGET_GRADLE="8.10.2"
             fi
           fi
@@ -206,7 +216,9 @@ jobs:
       # 4. INSTALL SDK COMPONENTS + PATCH PROJECT
       # ──────────────────────────────────────────────
       - name: Install SDK components and patch project
+        shell: bash
         run: |
+          set +e
           cd "workspace/${{ steps.info.outputs.ROOT }}"
           # ── Install missing SDK platforms ──
           for S in ${{ steps.info.outputs.SDK }}; do
@@ -261,7 +273,7 @@ jobs:
             fi
           fi
           # ── Patch: remove hardcoded ndkVersion (let it auto-resolve) ──
-          for F in $(find . -maxdepth 3 -name "build.gradle" -o -name "build.gradle.kts" 2>/dev/null | head -10); do
+          for F in $(find . -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" \) 2>/dev/null | head -10); do
             if grep -q "ndkVersion" "$F" 2>/dev/null; then
               echo "Removing ndkVersion from $F"
               sed -i "/^[[:space:]]*ndkVersion/d" "$F"
@@ -280,7 +292,7 @@ jobs:
             echo "android.enableJetifier=true" >> gradle.properties
           fi
           # ── Patch: replace old support libraries with AndroidX ──
-          for F in $(find . -maxdepth 4 -name "build.gradle" -o -name "build.gradle.kts" 2>/dev/null | head -20); do
+          for F in $(find . -maxdepth 4 \( -name "build.gradle" -o -name "build.gradle.kts" \) 2>/dev/null | head -20); do
             sed -i "s|com.android.support:multidex|androidx.multidex:multidex|g" "$F" 2>/dev/null || true
             sed -i "s|com.android.support:appcompat-v7|androidx.appcompat:appcompat|g" "$F" 2>/dev/null || true
             sed -i "s|com.android.support:design|com.google.android.material:material|g" "$F" 2>/dev/null || true
@@ -289,7 +301,7 @@ jobs:
           # ── Patch: Kotlin version compatibility with AGP 8+ ──
           if [ -n "$AGP_MAJ" ] && [ "$AGP_MAJ" -ge 8 ] 2>/dev/null; then
             KOTLIN_VER=""
-            for F in $(find . -maxdepth 3 -name "*.gradle" -o -name "*.gradle.kts" 2>/dev/null | head -20); do
+            for F in $(find . -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) 2>/dev/null | head -20); do
               KV=$(grep -oP 'org\.jetbrains\.kotlin(?:\.android|\.jvm|\.kapt):kotlin-gradle-plugin:\K[\d]+\.[\d]+(\.[\d]+)?' "$F" 2>/dev/null | head -1)
               [ -n "$KV" ] && KOTLIN_VER="$KV" && break
             done
@@ -300,7 +312,7 @@ jobs:
               # AGP 8.x needs Kotlin 1.8+
               if [ "$KOT_MAJ" -eq 1 ] && [ "$KOT_MIN" -lt 8 ] 2>/dev/null; then
                 echo "Upgrading Kotlin to 1.9.22 for AGP 8 compatibility"
-                for F in $(find . -maxdepth 3 -name "*.gradle" -o -name "*.gradle.kts" 2>/dev/null | head -20); do
+                for F in $(find . -maxdepth 3 \( -name "*.gradle" -o -name "*.gradle.kts" \) 2>/dev/null | head -20); do
                   sed -i "s|org\.jetbrains\.kotlin\(\.android\|\.jvm\|\.kapt\?\):kotlin-gradle-plugin:$KOTLIN_VER|org.jetbrains.kotlin\1:kotlin-gradle-plugin:1.9.22|g" "$F" 2>/dev/null || true
                   sed -i "s|kotlinVersion.*=.*\"$KOTLIN_VER\"|kotlinVersion = \"1.9.22\"|g" "$F" 2>/dev/null || true
                 done
