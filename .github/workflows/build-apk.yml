@@ -297,12 +297,33 @@ jobs:
                 [ -z "$SDK_NUM" ] && SDK_NUM=$(grep -oP 'compileSdk\s*\{[^}]*preview\("\K\d+' "$F" 2>/dev/null | head -1 || true)
                 if [ -n "$SDK_NUM" ]; then
                   echo "Converting compileSdk block to compileSdk = $SDK_NUM in $F"
-                  # Replace multi-line compileSdk { ... } block with simple assignment
-                  python3 -c "
-          import re, sys
-          with open('$F', 'r') as fh: content = fh.read()
-          content = re.sub(r'compileSdk\s*\{[^}]*\}', 'compileSdk = $SDK_NUM', content, count=1)
-          with open('$F', 'w') as fh: fh.write(content)
+                  # Use Python to properly handle nested braces in compileSdk { ... } block
+                  PY_FILE="$F" PY_SDK="$SDK_NUM" python3 -c "
+          import re, os
+          F = os.environ['PY_FILE']
+          SDK = os.environ['PY_SDK']
+          with open(F, 'r') as fh:
+              lines = fh.readlines()
+          new_lines = []
+          skip_until_close = 0
+          found = False
+          for line in lines:
+              if not found and re.search(r'compileSdk\s*\{', line):
+                  new_lines.append(re.sub(r'compileSdk\s*\{.*', f'compileSdk = {SDK}', line))
+                  opens = line.count('{') - line.count('}')
+                  if opens <= 0:
+                      found = True
+                  else:
+                      skip_until_close = opens
+              elif skip_until_close > 0:
+                  opens = line.count('{') - line.count('}')
+                  skip_until_close += opens
+                  if skip_until_close <= 0:
+                      found = True
+              else:
+                  new_lines.append(line)
+          with open(F, 'w') as fh:
+              fh.writelines(new_lines)
           " 2>/dev/null || true
                 fi
               fi
@@ -329,9 +350,13 @@ jobs:
                     -keyalg RSA -keysize 2048 -validity 10000 \
                     -storepass novabuild -keypass novabuild \
                     -dname "CN=Nova,OU=Build,O=Nova,L=Unknown,ST=Unknown,C=US" 2>/dev/null || true
-                  # Also set env vars for signing config
-                  export STORE_PASSWORD=novabuild
-                  export KEY_PASSWORD=novabuild
+                  # Also patch build.gradle to use env vars or hardcoded values for signing
+                  # Replace env var references with actual values since env vars won't be set
+                  sed -i 's/System.getenv("STORE_PASSWORD") ?:.*}/"novabuild"/' "$F" 2>/dev/null || true
+                  sed -i 's/System.getenv("KEY_PASSWORD") ?:.*}/"novabuild"/' "$F" 2>/dev/null || true
+                  sed -i 's/System.getenv("STORE_PASSWORD")/"novabuild"/' "$F" 2>/dev/null || true
+                  sed -i 's/System.getenv("KEY_PASSWORD")/"novabuild"/' "$F" 2>/dev/null || true
+                  sed -i 's/System.getenv("KEYSTORE_PATH") ?:.*}/"'$(pwd)/$KS_NAME'"/' "$F" 2>/dev/null || true
                   break 2
                 fi
               done
@@ -382,6 +407,16 @@ jobs:
               touch .env
             fi
           fi
+          # ── Patch: remove GoogleServicesStrategy import that may fail without proper classpath ──
+          for F in $(find . -maxdepth 4 \( -name "build.gradle.kts" \) 2>/dev/null | head -20); do
+            if grep -q 'GoogleServicesPlugin.MissingGoogleServicesStrategy' "$F" 2>/dev/null; then
+              echo "Removing GoogleServicesPlugin import from $F"
+              sed -i '/GoogleServicesPlugin\.MissingGoogleServicesStrategy/d' "$F"
+              # Also replace the googleServices { missingGoogleServicesStrategy = ... } block
+              # with a safe version that doesn't need the import
+              sed -i 's/googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }/googleServices { missingGoogleServicesStrategy = "WARN" }/' "$F" 2>/dev/null || true
+            fi
+          done
           # ── Patch: generate gradlew + wrapper jar if missing ──
           if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
             if ! [ -f "gradlew" ] || ! [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
@@ -412,6 +447,11 @@ jobs:
               sed -i "/^[[:space:]]*ndkVersion/d" "$F"
             fi
           done
+          # ── Patch: disable configuration-cache (can cause issues with some plugins in CI) ──
+          if [ -f "gradle.properties" ] && grep -q "org.gradle.configuration-cache=true" "gradle.properties" 2>/dev/null; then
+            echo "Disabling configuration-cache for CI compatibility"
+            sed -i 's/org.gradle.configuration-cache=true/org.gradle.configuration-cache=false/' gradle.properties
+          fi
           # ── Patch: AndroidX migration ──
           if [ -f "gradle.properties" ]; then
             if ! grep -q "android.useAndroidX" "gradle.properties"; then
