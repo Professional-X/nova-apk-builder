@@ -116,7 +116,8 @@ jobs:
           JAVA="17"
           if [ -n "$AGP" ]; then
             MAJOR=$(echo "$AGP" | cut -d. -f1)
-            if [ "$MAJOR" -lt 8 ] 2>/dev/null; then JAVA="11"; fi
+            if [ "$MAJOR" -ge 9 ] 2>/dev/null; then JAVA="21"
+            elif [ "$MAJOR" -lt 8 ] 2>/dev/null; then JAVA="11"; fi
           fi
           if [ "$TYPE" = "flutter" ]; then JAVA="17"; fi
           echo "JAVA=$JAVA" >> $GITHUB_OUTPUT
@@ -128,7 +129,15 @@ jobs:
           NDK_VERS=""
           ALL_GRADLE=$(find "$ROOT" -maxdepth 4 \( -name "*.gradle" -o -name "*.gradle.kts" \) 2>/dev/null | head -30)
           for F in $ALL_GRADLE; do
+            # Standard compileSdk syntax: compileSdk = 34 or compileSdk 34
             CS=$(grep -oP '(?:compileSdk|compileSdkVersion)\s*=?\s*["\x27]?\K\d+' "$F" 2>/dev/null || true)
+            # AGP 9.x block syntax: compileSdk { version = release(36) ... } or compileSdk { version = preview("36") }
+            if [ -z "$CS" ]; then
+              CS=$(grep -oP 'compileSdk\s*\{[^}]*release\(\K\d+' "$F" 2>/dev/null || true)
+            fi
+            if [ -z "$CS" ]; then
+              CS=$(grep -oP 'compileSdk\s*\{[^}]*preview\("\K\d+' "$F" 2>/dev/null || true)
+            fi
             COMPILE_SDKS="$COMPILE_SDKS $CS"
             BT=$(grep -oP 'buildToolsVersion\s*=?\s*["\x27]\K[\d.]+' "$F" 2>/dev/null || true)
             BUILD_TOOLS="$BUILD_TOOLS $BT"
@@ -165,10 +174,18 @@ jobs:
             AGP_MAJ=$(echo "$AGP" | cut -d. -f1)
             GR_MAJ=$(echo "$GRADLE_VER" | cut -d. -f1)
             GR_MIN=$(echo "$GRADLE_VER" | cut -d. -f2)
-            if [ "$AGP_MAJ" -ge 8 ] 2>/dev/null && [ "$GR_MAJ" -lt 8 ] 2>/dev/null; then
+            # AGP 9.x requires Gradle 9.3+
+            if [ "$AGP_MAJ" -ge 9 ] 2>/dev/null && [ "$GR_MAJ" -lt 9 ] 2>/dev/null; then
+              NEED_UPGRADE="yes"; TARGET_GRADLE="9.3.1"
+            fi
+            if [ "$AGP_MAJ" -ge 9 ] 2>/dev/null && [ "$GR_MAJ" -eq 9 ] 2>/dev/null && [ "$GR_MIN" -lt 3 ] 2>/dev/null; then
+              NEED_UPGRADE="yes"; TARGET_GRADLE="9.3.1"
+            fi
+            # AGP 8.x requires Gradle 8.4+
+            if [ "$AGP_MAJ" -eq 8 ] 2>/dev/null && [ "$GR_MAJ" -lt 8 ] 2>/dev/null; then
               NEED_UPGRADE="yes"; TARGET_GRADLE="8.10.2"
             fi
-            if [ "$AGP_MAJ" -ge 8 ] 2>/dev/null && [ "$GR_MAJ" -eq 8 ] 2>/dev/null && [ "$GR_MIN" -lt 4 ] 2>/dev/null; then
+            if [ "$AGP_MAJ" -eq 8 ] 2>/dev/null && [ "$GR_MAJ" -eq 8 ] 2>/dev/null && [ "$GR_MIN" -lt 4 ] 2>/dev/null; then
               NEED_UPGRADE="yes"; TARGET_GRADLE="8.10.2"
             fi
             if [ "$AGP_MAJ" -eq 7 ] 2>/dev/null && [ "$GR_MAJ" -lt 7 ] 2>/dev/null; then
@@ -228,14 +245,14 @@ jobs:
             fi
           done
           # Also ensure common fallback platforms
-          yes 2>/dev/null | sdkmanager "platforms;android-34" "platforms;android-35" 2>/dev/null || true
+          yes 2>/dev/null | sdkmanager "platforms;android-34" "platforms;android-35" "platforms;android-36" 2>/dev/null || true
           # ── Install missing build-tools ──
           for BT in ${{ steps.info.outputs.BT }}; do
             echo "Installing build-tools $BT"
             yes 2>/dev/null | sdkmanager "build-tools;$BT" 2>/dev/null || true
           done
           # Also ensure a fallback build-tools
-          yes 2>/dev/null | sdkmanager "build-tools;34.0.0" 2>/dev/null || true
+          yes 2>/dev/null | sdkmanager "build-tools;34.0.0" "build-tools;36.0.0" 2>/dev/null || true
           # ── Install NDK versions ──
           for NK in ${{ steps.info.outputs.NDK }}; do
             echo "Installing NDK $NK"
@@ -270,6 +287,122 @@ jobs:
               fi
               cat "$APP_BG" >> "$TMPF"
               mv "$TMPF" "$APP_BG"
+            fi
+          fi
+          # ── Patch: AGP 9.x compileSdk block syntax → plain integer ──
+          if [ -n "$AGP_MAJ" ] && [ "$AGP_MAJ" -ge 9 ] 2>/dev/null; then
+            for F in $(find . -maxdepth 4 \( -name "build.gradle" -o -name "build.gradle.kts" \) 2>/dev/null | head -20); do
+              if grep -qP 'compileSdk\s*\{' "$F" 2>/dev/null; then
+                SDK_NUM=$(grep -oP 'compileSdk\s*\{[^}]*release\(\K\d+' "$F" 2>/dev/null | head -1 || true)
+                [ -z "$SDK_NUM" ] && SDK_NUM=$(grep -oP 'compileSdk\s*\{[^}]*preview\("\K\d+' "$F" 2>/dev/null | head -1 || true)
+                if [ -n "$SDK_NUM" ]; then
+                  echo "Converting compileSdk block to compileSdk = $SDK_NUM in $F"
+                  # Replace multi-line compileSdk { ... } block with simple assignment
+                  python3 -c "
+          import re, sys
+          with open('$F', 'r') as fh: content = fh.read()
+          content = re.sub(r'compileSdk\s*\{[^}]*\}', 'compileSdk = $SDK_NUM', content, count=1)
+          with open('$F', 'w') as fh: fh.write(content)
+          " 2>/dev/null || true
+                fi
+              fi
+            done
+          fi
+          # ── Patch: generate debug.keystore if missing ──
+          if ! [ -f "debug.keystore" ]; then
+            echo "Generating debug.keystore"
+            keytool -genkeypair -v \
+              -keystore debug.keystore -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" 2>/dev/null || true
+          fi
+          # ── Patch: generate release keystore if missing and referenced ──
+          for KS_NAME in "my-upload-key.jks" "upload.jks" "release.jks"; do
+            if ! [ -f "$KS_NAME" ]; then
+              # Check if any build.gradle references it
+              for F in $(find . -maxdepth 4 \( -name "build.gradle" -o -name "build.gradle.kts" \) 2>/dev/null | head -20); do
+                if grep -q "$KS_NAME" "$F" 2>/dev/null; then
+                  echo "Generating $KS_NAME for build"
+                  keytool -genkeypair -v \
+                    -keystore "$KS_NAME" -alias upload \
+                    -keyalg RSA -keysize 2048 -validity 10000 \
+                    -storepass novabuild -keypass novabuild \
+                    -dname "CN=Nova,OU=Build,O=Nova,L=Unknown,ST=Unknown,C=US" 2>/dev/null || true
+                  # Also set env vars for signing config
+                  export STORE_PASSWORD=novabuild
+                  export KEY_PASSWORD=novabuild
+                  break 2
+                fi
+              done
+            fi
+          done
+          # ── Patch: create google-services.json if missing but plugin applied ──
+          if ! [ -f "app/google-services.json" ]; then
+            for F in $(find . -maxdepth 4 \( -name "build.gradle" -o -name "build.gradle.kts" \) 2>/dev/null | head -20); do
+              if grep -q 'google.services\|google-services\|com.google.gms.google-services' "$F" 2>/dev/null; then
+                echo "Creating dummy google-services.json"
+                cat > app/google-services.json << 'GSEOF'
+          {
+            "project_info": {
+              "project_number": "000000000000",
+              "project_id": "dummy-project-placeholder",
+              "storage_bucket": "dummy-project-placeholder.appspot.com"
+            },
+            "client": [{
+              "client_info": {
+                "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+                "android_client_info": { "package_name": "com.example" }
+              },
+              "api_key": [{ "current_key": "AIzaSyDummyPlaceholderKey1234567890" }],
+              "services": {
+                "appinvite_service": { "status": 2 }
+              }
+            }],
+            "configuration_version": "1"
+          }
+          GSEOF
+                # Update package name in google-services.json to match manifest
+                if [ -f "app/src/main/AndroidManifest.xml" ]; then
+                  MPKG=$(grep -oP 'package\s*=\s*"[^"]+"' app/src/main/AndroidManifest.xml | head -1 | grep -oP '"[^"]+"' | tr -d '"')
+                  if [ -n "$MPKG" ]; then
+                    sed -i "s/\"package_name\": \"com.example\"/\"package_name\": \"$MPKG\"/" app/google-services.json
+                  fi
+                fi
+                break
+              fi
+            done
+          fi
+          # ── Patch: ensure .env file exists for secrets plugin ──
+          if ! [ -f ".env" ]; then
+            if [ -f ".env.example" ]; then
+              cp .env.example .env
+              echo "Copied .env.example to .env"
+            else
+              touch .env
+            fi
+          fi
+          # ── Patch: generate gradlew + wrapper jar if missing ──
+          if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+            if ! [ -f "gradlew" ] || ! [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+              echo "Generating Gradle wrapper (gradlew + jar)"
+              DETECTED_GRADLE="${{ steps.info.outputs.GRADLE_VER }}"
+              [ -z "$DETECTED_GRADLE" ] && DETECTED_GRADLE="8.10.2"
+              # Download Gradle distro to bootstrap the wrapper
+              GRADLE_URL="https://services.gradle.org/distributions/gradle-${DETECTED_GRADLE}-bin.zip"
+              echo "Downloading Gradle $DETECTED_GRADLE for wrapper generation"
+              curl -sfL -o /tmp/gradle-boot.zip "$GRADLE_URL" || true
+              if [ -f /tmp/gradle-boot.zip ]; then
+                unzip -q /tmp/gradle-boot.zip -d /tmp/ 2>/dev/null || true
+                GRADLE_BIN=$(ls -d /tmp/gradle-*/bin 2>/dev/null | head -1)
+                if [ -n "$GRADLE_BIN" ]; then
+                  export PATH="$GRADLE_BIN:$PATH"
+                  gradle wrapper --gradle-version "$DETECTED_GRADLE" 2>/dev/null || true
+                fi
+                rm -rf /tmp/gradle-boot.zip /tmp/gradle-* 2>/dev/null || true
+              fi
+              # Ensure gradlew is executable
+              chmod +x gradlew 2>/dev/null || true
             fi
           fi
           # ── Patch: remove hardcoded ndkVersion (let it auto-resolve) ──
@@ -355,10 +488,13 @@ jobs:
             if ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"; then OK=true; fi
           fi
           if [ "$OK" = false ]; then
-            echo "=== Fallback: system gradle ==="
-            wget -q https://services.gradle.org/distributions/gradle-8.4-bin.zip
-            unzip -q gradle-8.4-bin.zip
-            export PATH="$PWD/gradle-8.4/bin:$PATH"
+            # Use detected Gradle version from wrapper properties, not hardcoded 8.4
+            FALLBACK_GRADLE="${{ steps.info.outputs.GRADLE_VER }}"
+            [ -z "$FALLBACK_GRADLE" ] && FALLBACK_GRADLE="8.10.2"
+            echo "=== Fallback: system gradle $FALLBACK_GRADLE ==="
+            wget -q "https://services.gradle.org/distributions/gradle-${FALLBACK_GRADLE}-bin.zip"
+            unzip -q "gradle-${FALLBACK_GRADLE}-bin.zip"
+            export PATH="$PWD/gradle-${FALLBACK_GRADLE}/bin:$PATH"
             if gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"; then OK=true; fi
           fi
           cp "$LOG" "$RUNNER_TEMP/build-artifacts/build.log" 2>/dev/null || true
