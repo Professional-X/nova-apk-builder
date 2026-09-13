@@ -519,13 +519,21 @@ jobs:
           # ── Patch: add common R8/ProGuard keep rules for known libraries ──
           PROGUARD_FILE=""
           for PF in "app/proguard-rules.pro" "proguard-rules.pro" "app/proguard.pro" "proguard.pro"; do
-            if [ -f "$PF" ]; then
-              PROGUARD_FILE="$PF"
-              break
-            fi
+            # Also check android/ subdirectory for Flutter projects
+            for DIR in "." "android"; do
+              if [ -f "$DIR/$PF" ]; then
+                PROGUARD_FILE="$DIR/$PF"
+                break 2
+              fi
+            done
           done
           if [ -z "$PROGUARD_FILE" ]; then
-            PROGUARD_FILE="app/proguard-rules.pro"
+            # Create proguard file in the right place
+            if [ -d "android/app" ]; then
+              PROGUARD_FILE="android/app/proguard-rules.pro"
+            else
+              PROGUARD_FILE="app/proguard-rules.pro"
+            fi
             touch "$PROGUARD_FILE" 2>/dev/null || true
           fi
           if [ -f "$PROGUARD_FILE" ]; then
@@ -538,9 +546,41 @@ jobs:
             grep -q "javax.xml.bind" "$PROGUARD_FILE" 2>/dev/null || echo "-dontwarn javax.xml.bind.**" >> "$PROGUARD_FILE"
             grep -q "java.management" "$PROGUARD_FILE" 2>/dev/null || echo "-dontwarn java.management.**" >> "$PROGUARD_FILE"
             # Ensure proguard file is referenced in build.gradle
-            for BG in $(find . -maxdepth 3 -name "build.gradle.kts" -path "*/app/*" 2>/dev/null | head -3); do
+            PROGUARD_REL=$(echo "$PROGUARD_FILE" | sed 's|^.*/||')
+            for BG in $(find . -maxdepth 4 \( -name "build.gradle" -o -name "build.gradle.kts" \) -path "*/app/*" 2>/dev/null | head -5); do
               if ! grep -q "proguardFiles" "$BG" 2>/dev/null; then
-                echo "Note: $PROGUARD_FILE created but may need proguardFiles reference in $BG"
+                echo "Injecting proguardFiles reference into $BG"
+                # Add proguardFiles to the release buildTypes section
+                if [[ "$BG" == *.kts ]]; then
+                  sed -i "/buildTypes/,/^[[:space:]]*}/ { /^[[:space:]]*}/ { s|^[[:space:]]*}|            proguardFiles(getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"$PROGUARD_REL\")\n        }|; t; s|^[[:space:]]*}|            proguardFiles(getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"$PROGUARD_REL\")\n    }|; } }" "$BG" 2>/dev/null || true
+                else
+                  sed -i "/buildTypes/,/^[[:space:]]*}/ { /^[[:space:]]*}/ { s|^[[:space:]]*}|            proguardFiles getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"$PROGUARD_REL\"\n        }|; t; s|^[[:space:]]*}|            proguardFiles getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"$PROGUARD_REL\"\n    }|; } }" "$BG" 2>/dev/null || true
+                fi
+                # Alternative: if sed didn't work, use Python
+                if ! grep -q "proguardFiles" "$BG" 2>/dev/null; then
+                  PY_BG="$BG" PY_PF="$PROGUARD_REL" PY_EXT="${BG##*.}" python3 -c '
+          import re, os
+          bg = os.environ["PY_BG"]
+          pf = os.environ["PY_PF"]
+          ext = os.environ.get("PY_EXT", "gradle")
+          with open(bg, "r") as f:
+              content = f.read()
+          if "proguardFiles" not in content:
+              if ext == "kts":
+                  proguard_line = f"            proguardFiles(getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"{pf}\")"
+              else:
+                  proguard_line = f"            proguardFiles getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"{pf}\""
+              # Find the release block and add proguardFiles after signingConfig
+              content = re.sub(
+                  r"(buildTypes\s*\{\s*release\s*\{)",
+                  r"\1\n" + proguard_line,
+                  content
+              )
+              with open(bg, "w") as f:
+                  f.write(content)
+              print(f"  Injected proguardFiles into {bg}")
+          ' 2>/dev/null || true
+                fi
               fi
             done
           fi
