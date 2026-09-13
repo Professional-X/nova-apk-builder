@@ -595,6 +595,7 @@ jobs:
         shell: bash
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_URL: ${{ secrets.AI_API_URL }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
@@ -651,19 +652,28 @@ jobs:
             echo "║  🤖 AI Build Analysis — Attempt $((RETRY+1)) of $MAX_RETRIES    ║"
             echo "╚══════════════════════════════════════════════════╝"
 
-            # Determine API provider: Groq (preferred) or custom AI_API_KEY
-            if [ -n "$GROQ_API_KEY" ]; then
+            # Determine API provider: Gemini > Groq > custom
+            if [ -n "$GEMINI_API_KEY" ]; then
+              AI_API_KEY="$GEMINI_API_KEY"
+              AI_API_URL="${AI_API_URL:-https://generativelanguage.googleapis.com/v1beta/openai/chat/completions?key=$GEMINI_API_KEY}"
+              AI_MODEL="${AI_MODEL:-gemini-2.5-flash-preview-05-20}"
+              # Gemini uses key in URL, not Bearer header — set dummy for auth header
+              AI_AUTH_TYPE="none"
+              echo "🔌 Using Gemini API (model: $AI_MODEL)"
+            elif [ -n "$GROQ_API_KEY" ]; then
               AI_API_KEY="$GROQ_API_KEY"
               AI_API_URL="${AI_API_URL:-https://api.groq.com/openai/v1/chat/completions}"
               AI_MODEL="${AI_MODEL:-llama-3.3-70b-versatile}"
+              AI_AUTH_TYPE="bearer"
               echo "🔌 Using Groq API (model: $AI_MODEL)"
             elif [ -n "$AI_API_KEY" ]; then
               AI_API_URL="${AI_API_URL:-https://api.openai.com/v1/chat/completions}"
               AI_MODEL="${AI_MODEL:-gpt-4o-mini}"
+              AI_AUTH_TYPE="bearer"
               echo "🔌 Using custom AI API (model: $AI_MODEL)"
             else
-              echo "⚠️  No GROQ_API_KEY or AI_API_KEY secret configured — skipping AI analysis"
-              echo "💡 Tip: Add GROQ_API_KEY secret to enable AI self-healing (free at console.groq.com)"
+              echo "⚠️  No GEMINI_API_KEY, GROQ_API_KEY, or AI_API_KEY secret configured — skipping AI analysis"
+              echo "💡 Tip: Add GEMINI_API_KEY (free: aistudio.google.com) or GROQ_API_KEY (free: console.groq.com)"
               return 1
             fi
 
@@ -734,19 +744,33 @@ jobs:
             # Escape prompt for JSON
             PROMPT_JSON=$(printf '%s' "$PROMPT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 
-            # Call AI API with retry for rate limits (Groq free tier: 30 RPM)
+            # Call AI API with retry for rate limits
             # Build request body — try json_object mode first, fallback without it
             REQ_BODY="{\"model\":\"$AI_MODEL\",\"messages\":[{\"role\":\"system\",\"content\":\"You are an expert Android/Gradle build error analyst. Always respond with valid JSON only. No markdown, no explanation outside JSON.\"},{\"role\":\"user\",\"content\":$PROMPT_JSON}],\"max_tokens\":2000,\"temperature\":0.1,\"response_format\":{\"type\":\"json_object\"}}"
             REQ_BODY_NO_JSON_MODE="{\"model\":\"$AI_MODEL\",\"messages\":[{\"role\":\"system\",\"content\":\"You are an expert Android/Gradle build error analyst. Always respond with valid JSON only. No markdown, no explanation outside JSON.\"},{\"role\":\"user\",\"content\":$PROMPT_JSON}],\"max_tokens\":2000,\"temperature\":0.1}"
 
+            # Build auth header based on provider
+            if [ "$AI_AUTH_TYPE" = "none" ]; then
+              AUTH_HEADER=""
+            else
+              AUTH_HEADER="-H \"Authorization: Bearer $AI_API_KEY\""
+            fi
+
             AI_RESPONSE=""
             for ATTEMPT in 1 2 3; do
               # Try with json_object mode first, fallback without if model doesn't support it
-              AI_RESPONSE=$(curl -s --max-time 90 \
-                -H "Authorization: Bearer $AI_API_KEY" \
-                -H "Content-Type: application/json" \
-                -d "$REQ_BODY" \
-                "$AI_API_URL" 2>/dev/null || true)
+              if [ "$AI_AUTH_TYPE" = "none" ]; then
+                AI_RESPONSE=$(curl -s --max-time 90 \
+                  -H "Content-Type: application/json" \
+                  -d "$REQ_BODY" \
+                  "$AI_API_URL" 2>/dev/null || true)
+              else
+                AI_RESPONSE=$(curl -s --max-time 90 \
+                  -H "Authorization: Bearer $AI_API_KEY" \
+                  -H "Content-Type: application/json" \
+                  -d "$REQ_BODY" \
+                  "$AI_API_URL" 2>/dev/null || true)
+              fi
 
               # Check for empty response (network error, 403, etc.)
               if [ -z "$AI_RESPONSE" ]; then
@@ -765,11 +789,18 @@ jobs:
               # If response contains json_mode error, retry without response_format
               if echo "$AI_RESPONSE" | grep -qi 'json.*mode\|response_format\|not supported\|unsupported.*parameter'; then
                 echo "⚠️  Model doesn't support json_object mode, retrying without it..."
-                AI_RESPONSE=$(curl -s --max-time 90 \
-                  -H "Authorization: Bearer $AI_API_KEY" \
-                  -H "Content-Type: application/json" \
-                  -d "$REQ_BODY_NO_JSON_MODE" \
-                  "$AI_API_URL" 2>/dev/null || true)
+                if [ "$AI_AUTH_TYPE" = "none" ]; then
+                  AI_RESPONSE=$(curl -s --max-time 90 \
+                    -H "Content-Type: application/json" \
+                    -d "$REQ_BODY_NO_JSON_MODE" \
+                    "$AI_API_URL" 2>/dev/null || true)
+                else
+                  AI_RESPONSE=$(curl -s --max-time 90 \
+                    -H "Authorization: Bearer $AI_API_KEY" \
+                    -H "Content-Type: application/json" \
+                    -d "$REQ_BODY_NO_JSON_MODE" \
+                    "$AI_API_URL" 2>/dev/null || true)
+                fi
               fi
 
               [ -z "$AI_RESPONSE" ] && AI_RESPONSE='{"error":"api_call_failed"}'
