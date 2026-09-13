@@ -516,6 +516,34 @@ jobs:
               sed -i "s|org.gradle.jvmargs=.*|org.gradle.jvmargs=-Xmx3g|" gradle.properties
             fi
           fi
+          # ── Patch: add common R8/ProGuard keep rules for known libraries ──
+          PROGUARD_FILE=""
+          for PF in "app/proguard-rules.pro" "proguard-rules.pro" "app/proguard.pro" "proguard.pro"; do
+            if [ -f "$PF" ]; then
+              PROGUARD_FILE="$PF"
+              break
+            fi
+          done
+          if [ -z "$PROGUARD_FILE" ]; then
+            PROGUARD_FILE="app/proguard-rules.pro"
+            touch "$PROGUARD_FILE" 2>/dev/null || true
+          fi
+          if [ -f "$PROGUARD_FILE" ]; then
+            echo "Adding common R8 keep rules to $PROGUARD_FILE"
+            # Rhino (org.mozilla.javascript) references java.beans which is not in Android
+            grep -q "java.beans" "$PROGUARD_FILE" 2>/dev/null || echo "-dontwarn java.beans.**" >> "$PROGUARD_FILE"
+            # Common libraries that reference missing JVM classes
+            grep -q "java.awt" "$PROGUARD_FILE" 2>/dev/null || echo "-dontwarn java.awt.**" >> "$PROGUARD_FILE"
+            grep -q "javax.swing" "$PROGUARD_FILE" 2>/dev/null || echo "-dontwarn javax.swing.**" >> "$PROGUARD_FILE"
+            grep -q "javax.xml.bind" "$PROGUARD_FILE" 2>/dev/null || echo "-dontwarn javax.xml.bind.**" >> "$PROGUARD_FILE"
+            grep -q "java.management" "$PROGUARD_FILE" 2>/dev/null || echo "-dontwarn java.management.**" >> "$PROGUARD_FILE"
+            # Ensure proguard file is referenced in build.gradle
+            for BG in $(find . -maxdepth 3 -name "build.gradle.kts" -path "*/app/*" 2>/dev/null | head -3); do
+              if ! grep -q "proguardFiles" "$BG" 2>/dev/null; then
+                echo "Note: $PROGUARD_FILE created but may need proguardFiles reference in $BG"
+              fi
+            done
+          fi
           chmod +x gradlew 2>/dev/null || true
           echo "All patches applied"
 
@@ -674,29 +702,49 @@ jobs:
             AI_RESPONSE=""
             for ATTEMPT in 1 2 3; do
               # Try with json_object mode first, fallback without if model doesn't support it
-              AI_RESPONSE=$(curl -sf --max-time 90 \
+              AI_RESPONSE=$(curl -s --max-time 90 \
                 -H "Authorization: Bearer $AI_API_KEY" \
                 -H "Content-Type: application/json" \
                 -d "$REQ_BODY" \
                 "$AI_API_URL" 2>/dev/null || true)
 
+              # Check for empty response (network error, 403, etc.)
+              if [ -z "$AI_RESPONSE" ]; then
+                echo "⚠️  Empty response from AI API (attempt $ATTEMPT/3)"
+                sleep ${ATTEMPT}0
+                continue
+              fi
+
+              # Check for HTTP error responses that aren't JSON
+              if ! echo "$AI_RESPONSE" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+                echo "⚠️  Non-JSON response from AI API (attempt $ATTEMPT/3): ${AI_RESPONSE:0:200}"
+                sleep ${ATTEMPT}0
+                continue
+              fi
+
               # If response contains json_mode error, retry without response_format
               if echo "$AI_RESPONSE" | grep -qi 'json.*mode\|response_format\|not supported\|unsupported.*parameter'; then
                 echo "⚠️  Model doesn't support json_object mode, retrying without it..."
-                AI_RESPONSE=$(curl -sf --max-time 90 \
+                AI_RESPONSE=$(curl -s --max-time 90 \
                   -H "Authorization: Bearer $AI_API_KEY" \
                   -H "Content-Type: application/json" \
                   -d "$REQ_BODY_NO_JSON_MODE" \
-                  "$AI_API_URL" 2>/dev/null || echo '{"error":"api_call_failed"}')
+                  "$AI_API_URL" 2>/dev/null || true)
               fi
 
               [ -z "$AI_RESPONSE" ] && AI_RESPONSE='{"error":"api_call_failed"}'
 
-              # Check for rate limit
-              if echo "$AI_RESPONSE" | grep -q '"error".*"rate_limit\|429\|rate_limit_exceeded"'; then
+              # Check for API errors (rate limit, forbidden, invalid key)
+              if echo "$AI_RESPONSE" | grep -qi 'rate_limit\|429\|rate_limit_exceeded'; then
                 echo "⏳ Rate limited (attempt $ATTEMPT/3), waiting ${ATTEMPT}0s..."
                 sleep ${ATTEMPT}0
                 continue
+              fi
+              if echo "$AI_RESPONSE" | grep -qi 'forbidden\|403\|invalid.*key\|unauthorized\|401'; then
+                echo "❌ AI API key is invalid or unauthorized. Check your GROQ_API_KEY secret."
+                echo "   Go to https://console.groq.com/keys to verify your key"
+                AI_RESPONSE='{"error":"auth_failed"}'
+                break
               fi
               break
             done
