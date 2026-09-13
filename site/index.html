@@ -81,6 +81,39 @@
         <small>Must be configured in GitHub Secrets first.</small>
         </span>
       </label>
+
+      <!-- AI Self-Healing Toggle -->
+      <div style="margin-top:20px;padding:16px;border:1px solid #30363d;border-radius:8px;background:rgba(56,139,253,0.06);">
+        <h3 style="margin:0 0 8px 0;font-size:1rem;color:#58a6ff;">🤖 AI Self-Healing</h3>
+        <p style="margin:0 0 10px 0;font-size:0.85rem;color:#8b949e;">
+          When a build fails, AI analyzes the error and automatically patches source files to fix it.
+          Small issues are fixed silently; big problems are reported back to you.
+        </p>
+        <label class="radio-option" style="margin-bottom:6px;">
+          <input type="checkbox" id="ai-enabled" checked style="width:auto;margin-right:8px;">
+          <span style="font-size:0.9rem;"><strong>Enable AI self-healing</strong></span>
+        </label>
+        <div id="ai-config" style="margin-top:10px;">
+          <div style="margin-bottom:8px;">
+            <label style="font-size:0.8rem;color:#8b949e;display:block;margin-bottom:4px;">AI API Key (stored in GitHub Secrets as <code>AI_API_KEY</code>)</label>
+            <input type="password" id="ai-key-input" placeholder="sk-..." autocomplete="off" spellcheck="false"
+              style="width:100%;padding:8px 12px;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#c9d1d9;font-size:0.85rem;font-family:monospace;">
+          </div>
+          <div style="display:flex;gap:8px;margin-bottom:8px;">
+            <div style="flex:1;">
+              <label style="font-size:0.8rem;color:#8b949e;display:block;margin-bottom:4px;">API URL</label>
+              <input type="text" id="ai-url-input" value="https://api.openai.com/v1/chat/completions" autocomplete="off"
+                style="width:100%;padding:8px 12px;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#c9d1d9;font-size:0.8rem;font-family:monospace;">
+            </div>
+            <div style="flex:0 0 140px;">
+              <label style="font-size:0.8rem;color:#8b949e;display:block;margin-bottom:4px;">Model</label>
+              <input type="text" id="ai-model-input" value="gpt-4o-mini" autocomplete="off"
+                style="width:100%;padding:8px 12px;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#c9d1d9;font-size:0.8rem;font-family:monospace;">
+            </div>
+          </div>
+          <p class="hint" style="font-size:0.75rem;">Supports OpenAI, Groq, or any OpenAI-compatible API. Set secrets once in GitHub repo Settings → Secrets.</p>
+        </div>
+      </div>
     </section>
 
     <!-- Build Button -->

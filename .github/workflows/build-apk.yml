@@ -19,6 +19,7 @@ on:
 permissions:
   contents: write
   actions: read
+  issues: write
 
 jobs:
   build:
@@ -519,78 +520,351 @@ jobs:
           echo "All patches applied"
 
       # ──────────────────────────────────────────────
-      # 5. BUILD
+      # 5. BUILD WITH AI SELF-HEALING
       # ──────────────────────────────────────────────
-      - name: Build Android APK
-        if: steps.info.outputs.TYPE == 'android'
-        shell: bash
-        run: |
-          set -o pipefail
-          cd "workspace/${{ steps.info.outputs.ROOT }}"
-          LOG="$RUNNER_TEMP/build.log"
-          mkdir -p "$RUNNER_TEMP/build-artifacts"
-          OK=false
-          if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "=== gradlew assembleRelease ==="
-            if ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"; then OK=true; fi
-          fi
-          if [ "$OK" = false ]; then
-            # Use detected Gradle version from wrapper properties, not hardcoded 8.4
-            FALLBACK_GRADLE="${{ steps.info.outputs.GRADLE_VER }}"
-            [ -z "$FALLBACK_GRADLE" ] && FALLBACK_GRADLE="8.10.2"
-            echo "=== Fallback: system gradle $FALLBACK_GRADLE ==="
-            wget -q "https://services.gradle.org/distributions/gradle-${FALLBACK_GRADLE}-bin.zip"
-            unzip -q "gradle-${FALLBACK_GRADLE}-bin.zip"
-            export PATH="$PWD/gradle-${FALLBACK_GRADLE}/bin:$PATH"
-            if gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"; then OK=true; fi
-          fi
-          cp "$LOG" "$RUNNER_TEMP/build-artifacts/build.log" 2>/dev/null || true
-          if [ "$OK" = false ]; then
-            echo "ERROR: Build failed"
-            tail -60 "$LOG"
-            exit 1
-          fi
-          find . -name "*.apk" 2>/dev/null
-
-      - name: Build Flutter APK
-        if: steps.info.outputs.TYPE == 'flutter'
+      - name: Build with AI self-healing
+        id: build
         shell: bash
         env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_API_URL: ${{ secrets.AI_API_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
           GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=512m -Dorg.gradle.daemon=false"
         run: |
-          set -o pipefail
+          set +e
           cd "workspace/${{ steps.info.outputs.ROOT }}"
           LOG="$RUNNER_TEMP/build.log"
           mkdir -p "$RUNNER_TEMP/build-artifacts"
-          AB="android/app/build.gradle"
-          if [ -f "$AB" ]; then
-            sed -i "/^[[:space:]]*ndkVersion/d" "$AB"
-            sed -i "s|com.android.support:multidex|androidx.multidex:multidex|g" "$AB"
-          fi
-          if [ -f "android/gradle.properties" ]; then
-            grep -q "org.gradle.jvmargs" "android/gradle.properties" || echo "org.gradle.jvmargs=-Xmx3g" >> android/gradle.properties
-            grep -q "android.useAndroidX" "android/gradle.properties" || echo "android.useAndroidX=true" >> android/gradle.properties
-            grep -q "android.enableJetifier" "android/gradle.properties" || echo "android.enableJetifier=true" >> android/gradle.properties
-          fi
-          flutter pub get 2>&1 | tail -20
-          PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}"
-          P=0
-          for F in $(grep -rl "flutter " "$PUB_CACHE/hosted" --include="*.gradle" 2>/dev/null); do
-            sed -i "/^[[:space:]]*flutter[[:space:]]*{/,/}/d" "$F"
-            P=$((P + 1))
+          TYPE="${{ steps.info.outputs.TYPE }}"
+          MAX_RETRIES=3
+          RETRY=0
+
+          # ── Build function ──
+          run_build() {
+            OK=false
+            if [ "$TYPE" = "android" ]; then
+              if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
+                echo "=== Attempt $((RETRY+1)): gradlew assembleRelease ==="
+                ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"
+                [ ${PIPESTATUS[0]} -eq 0 ] && OK=true
+              fi
+              if [ "$OK" = false ]; then
+                FALLBACK_GRADLE="${{ steps.info.outputs.GRADLE_VER }}"
+                [ -z "$FALLBACK_GRADLE" ] && FALLBACK_GRADLE="8.10.2"
+                echo "=== Attempt $((RETRY+1)): system gradle $FALLBACK_GRADLE ==="
+                wget -q "https://services.gradle.org/distributions/gradle-${FALLBACK_GRADLE}-bin.zip"
+                unzip -q "gradle-${FALLBACK_GRADLE}-bin.zip"
+                export PATH="$PWD/gradle-${FALLBACK_GRADLE}/bin:$PATH"
+                gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"
+                [ ${PIPESTATUS[0]} -eq 0 ] && OK=true
+              fi
+            elif [ "$TYPE" = "flutter" ]; then
+              AB="android/app/build.gradle"
+              [ -f "$AB" ] && sed -i "/^[[:space:]]*ndkVersion/d" "$AB"
+              [ -f "android/gradle.properties" ] && {
+                grep -q "org.gradle.jvmargs" "android/gradle.properties" || echo "org.gradle.jvmargs=-Xmx3g" >> android/gradle.properties
+                grep -q "android.useAndroidX" "android/gradle.properties" || echo "android.useAndroidX=true" >> android/gradle.properties
+                grep -q "android.enableJetifier" "android/gradle.properties" || echo "android.enableJetifier=true" >> android/gradle.properties
+              }
+              flutter pub get 2>&1 | tail -20
+              echo "=== Attempt $((RETRY+1)): flutter build apk ==="
+              flutter build apk --release 2>&1 | tee "$LOG"
+              [ ${PIPESTATUS[0]} -eq 0 ] && OK=true
+            fi
+            cp "$LOG" "$RUNNER_TEMP/build-artifacts/build.log" 2>/dev/null || true
+            echo "$OK"
+          }
+
+          # ── AI analysis function ──
+          ai_analyze_and_patch() {
+            echo ""
+            echo "╔══════════════════════════════════════════════════╗"
+            echo "║  🤖 AI Build Analysis — Attempt $((RETRY+1)) of $MAX_RETRIES    ║"
+            echo "╚══════════════════════════════════════════════════╝"
+
+            # Determine API provider: Groq (preferred) or custom AI_API_KEY
+            if [ -n "$GROQ_API_KEY" ]; then
+              AI_API_KEY="$GROQ_API_KEY"
+              AI_API_URL="${AI_API_URL:-https://api.groq.com/openai/v1/chat/completions}"
+              AI_MODEL="${AI_MODEL:-llama-3.3-70b-versatile}"
+              echo "🔌 Using Groq API (model: $AI_MODEL)"
+            elif [ -n "$AI_API_KEY" ]; then
+              AI_API_URL="${AI_API_URL:-https://api.openai.com/v1/chat/completions}"
+              AI_MODEL="${AI_MODEL:-gpt-4o-mini}"
+              echo "🔌 Using custom AI API (model: $AI_MODEL)"
+            else
+              echo "⚠️  No GROQ_API_KEY or AI_API_KEY secret configured — skipping AI analysis"
+              echo "💡 Tip: Add GROQ_API_KEY secret to enable AI self-healing (free at console.groq.com)"
+              return 1
+            fi
+
+            # Extract last 200 lines of error from build log
+            ERROR_SECTION=$(tail -200 "$LOG" | grep -A200 "FAILURE\|FAILED\|error:" || tail -200 "$LOG")
+
+            # Collect relevant source files for AI context
+            CONTEXT_FILES=""
+            for F in $(find . -maxdepth 4 \( -name "*.gradle.kts" -o -name "*.gradle" -o -name "*.properties" -o -name "*.toml" \) -not -path "*/.gradle/*" 2>/dev/null | head -15); do
+              CONTENT=$(head -80 "$F" 2>/dev/null || true)
+              CONTEXT_FILES="${CONTEXT_FILES}
+
+          --- ${F} ---
+          ${CONTENT}"
+            done
+
+            # Build AI prompt — detailed for best results with Llama/Groq
+            PROMPT="Analyze this Android/Flutter build failure and determine if it can be auto-fixed.
+
+BUILD ERROR LOG (last 200 lines):
+${ERROR_SECTION}
+
+RELEVANT SOURCE FILES:
+${CONTEXT_FILES}
+
+PROJECT INFO: Type=${TYPE}, AGP=${{ steps.info.outputs.AGP }}, Gradle=${{ steps.info.outputs.GRADLE_VER }}, Java=${{ steps.info.outputs.JAVA }}
+
+COMMON AUTO-FIXABLE PATTERNS:
+- Missing or wrong import statements (e.g. GoogleServicesPlugin, FirebasePlugin)
+- Plugin config blocks that reference unavailable classes (e.g. googleServices { missingGoogleServicesStrategy = ... })
+- Version mismatches between AGP and Gradle wrapper
+- compileSdk block syntax that needs conversion to plain integer
+- Missing google-services.json or wrong package_name in it
+- Missing keystore files or signing config referencing env vars not set
+- System.getenv() calls for passwords that have no env vars in CI
+- Missing .env file for secrets gradle plugin
+- configuration-cache incompatibility with certain plugins
+- Kotlin version too old for current AGP
+- Missing gradlew or wrapper jar files
+
+INSTRUCTIONS:
+If the error is AUTO-FIXABLE (config/build issue, not a real code bug), respond:
+{\"action\":\"patch\",\"explanation\":\"what was wrong and what you fixed\",\"patches\":[{\"file\":\"relative/path/to/file\",\"find\":\"exact text from the source file to find\",\"replace\":\"the corrected text\"}]}
+
+Rules for patches:
+- \"find\" must be an EXACT substring from the source files shown above — copy it character-for-character
+- \"replace\" is the corrected version
+- Multiple patches allowed in the array
+- For missing files: use action=patch with find=\"\" and replace=file content, and set \"create\":true
+
+If the error is a REAL CODE BUG (logic error, missing source code, API incompatibility needing rewrite, wrong architecture), respond:
+{\"action\":\"report\",\"explanation\":\"clear explanation of what went wrong, why it can't be auto-fixed, and what the developer should do\"}
+
+Respond with ONLY valid JSON."
+
+            echo "📡 Calling AI ($AI_MODEL) to analyze build failure..."
+
+            # Escape prompt for JSON
+            PROMPT_JSON=$(printf '%s' "$PROMPT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+
+            # Call AI API with retry for rate limits (Groq free tier: 30 RPM)
+            # Build request body — try json_object mode first, fallback without it
+            REQ_BODY="{\"model\":\"$AI_MODEL\",\"messages\":[{\"role\":\"system\",\"content\":\"You are an expert Android/Gradle build error analyst. Always respond with valid JSON only. No markdown, no explanation outside JSON.\"},{\"role\":\"user\",\"content\":$PROMPT_JSON}],\"max_tokens\":2000,\"temperature\":0.1,\"response_format\":{\"type\":\"json_object\"}}"
+            REQ_BODY_NO_JSON_MODE="{\"model\":\"$AI_MODEL\",\"messages\":[{\"role\":\"system\",\"content\":\"You are an expert Android/Gradle build error analyst. Always respond with valid JSON only. No markdown, no explanation outside JSON.\"},{\"role\":\"user\",\"content\":$PROMPT_JSON}],\"max_tokens\":2000,\"temperature\":0.1}"
+
+            AI_RESPONSE=""
+            for ATTEMPT in 1 2 3; do
+              # Try with json_object mode first, fallback without if model doesn't support it
+              AI_RESPONSE=$(curl -sf --max-time 90 \
+                -H "Authorization: Bearer $AI_API_KEY" \
+                -H "Content-Type: application/json" \
+                -d "$REQ_BODY" \
+                "$AI_API_URL" 2>/dev/null || true)
+
+              # If response contains json_mode error, retry without response_format
+              if echo "$AI_RESPONSE" | grep -qi 'json.*mode\|response_format\|not supported\|unsupported.*parameter'; then
+                echo "⚠️  Model doesn't support json_object mode, retrying without it..."
+                AI_RESPONSE=$(curl -sf --max-time 90 \
+                  -H "Authorization: Bearer $AI_API_KEY" \
+                  -H "Content-Type: application/json" \
+                  -d "$REQ_BODY_NO_JSON_MODE" \
+                  "$AI_API_URL" 2>/dev/null || echo '{"error":"api_call_failed"}')
+              fi
+
+              [ -z "$AI_RESPONSE" ] && AI_RESPONSE='{"error":"api_call_failed"}'
+
+              # Check for rate limit
+              if echo "$AI_RESPONSE" | grep -q '"error".*"rate_limit\|429\|rate_limit_exceeded"'; then
+                echo "⏳ Rate limited (attempt $ATTEMPT/3), waiting ${ATTEMPT}0s..."
+                sleep ${ATTEMPT}0
+                continue
+              fi
+              break
+            done
+
+            # Extract AI message content
+            AI_CONTENT=$(echo "$AI_RESPONSE" | python3 -c "
+          import json,sys
+          try:
+              data = json.load(sys.stdin)
+              if 'error' in data:
+                  print('ERROR: AI API call failed')
+              else:
+                  print(data['choices'][0]['message']['content'])
+          except:
+              print('ERROR: Failed to parse AI response')
+          " 2>/dev/null || echo "ERROR: AI response parse failed")
+
+            if echo "$AI_CONTENT" | grep -q "^ERROR:"; then
+              echo "❌ AI analysis failed: $AI_CONTENT"
+              return 1
+            fi
+
+            echo "🤖 AI Response:"
+            echo "$AI_CONTENT"
+            echo ""
+
+            # Parse AI response — extract JSON from possible markdown code blocks
+            AI_JSON=$(echo "$AI_CONTENT" | python3 -c "
+          import json,sys,re
+          text = sys.stdin.read().strip()
+          # Try to extract JSON from markdown code block
+          m = re.search(r'\`\`\`(?:json)?\s*(\{.*?\})\s*\`\`\`', text, re.DOTALL)
+          if m:
+              print(m.group(1))
+          else:
+              # Try to find JSON object directly
+              m = re.search(r'\{.*\}', text, re.DOTALL)
+              if m:
+                  print(m.group(0))
+              else:
+                  print('{}')
+          " 2>/dev/null || echo '{}')
+
+            ACTION=$(echo "$AI_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('action','unknown'))" 2>/dev/null || echo "unknown")
+            EXPLANATION=$(echo "$AI_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('explanation','No explanation'))" 2>/dev/null || echo "No explanation")
+
+            echo "📋 Action: $ACTION"
+            echo "📝 Explanation: $EXPLANATION"
+
+            if [ "$ACTION" = "patch" ]; then
+              # Apply patches
+              PATCH_COUNT=$(echo "$AI_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('patches',[])))" 2>/dev/null || echo "0")
+              echo "🔧 Applying $PATCH_COUNT patch(es)..."
+
+              # Use Python to apply patches (handles find/replace safely)
+              echo "$AI_JSON" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for i, p in enumerate(data.get('patches', [])):
+              fpath = p.get('file', '')
+              find_text = p.get('find', '')
+              replace_text = p.get('replace', '')
+              try:
+                  with open(fpath, 'r') as f:
+                      content = f.read()
+                  if find_text in content:
+                      content = content.replace(find_text, replace_text, 1)
+                      with open(fpath, 'w') as f:
+                          f.write(content)
+                      print(f'  ✅ Patch {i+1}: Applied to {fpath}')
+                  else:
+                      print(f'  ⚠️  Patch {i+1}: Find text not found in {fpath}, skipping')
+                      # Try to show what's actually in the file around that area
+              except Exception as e:
+                  print(f'  ❌ Patch {i+1}: Failed on {fpath}: {e}')
+          " 2>/dev/null || echo "  ❌ Patch application failed"
+
+              echo ""
+              echo "✅ Patches applied — retrying build..."
+              return 0
+
+            elif [ "$ACTION" = "report" ]; then
+              echo ""
+              echo "╔══════════════════════════════════════════════════╗"
+              echo "║  🚨 UNFIXABLE BUILD ERROR — AI Report            ║"
+              echo "╚══════════════════════════════════════════════════╝"
+              echo ""
+              echo "$EXPLANATION"
+              echo ""
+              # Save report for the summary step
+              echo "AI_REPORT<<EOF" >> $GITHUB_ENV
+              echo "$EXPLANATION" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
+              echo "AI_ACTION=report" >> $GITHUB_ENV
+              return 1
+            else
+              echo "⚠️  AI returned unknown action: $ACTION"
+              return 1
+            fi
+          }
+
+          # ── Main build loop ──
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            RESULT=$(run_build)
+            if [ "$RESULT" = true ]; then
+              echo "BUILD_SUCCEEDED=true" >> $GITHUB_ENV
+              echo "✅ Build succeeded on attempt $((RETRY+1))"
+              find . -name "*.apk" 2>/dev/null
+              exit 0
+            fi
+
+            echo "❌ Build failed on attempt $((RETRY+1))"
+
+            # Try AI healing
+            if ai_analyze_and_patch; then
+              RETRY=$((RETRY + 1))
+              echo "🔄 Retrying build (attempt $((RETRY+1)) of $MAX_RETRIES)..."
+              echo "---"
+              continue
+            else
+              # AI couldn't fix it or no AI key — check if we should still retry
+              if [ "${AI_ACTION}" = "report" ]; then
+                # AI says unfixable — don't retry
+                break
+              fi
+              RETRY=$((RETRY + 1))
+              if [ $RETRY -lt $MAX_RETRIES ]; then
+                echo "🔄 Retrying build without AI fix (attempt $((RETRY+1)) of $MAX_RETRIES)..."
+              fi
+            fi
           done
-          echo "Patched $P plugin files"
-          set +e
-          flutter build apk --release 2>&1 | tee "$LOG"
-          EX=${PIPESTATUS[0]}
-          set -e
-          cp "$LOG" "$RUNNER_TEMP/build-artifacts/build.log" 2>/dev/null || true
-          if [ "$EX" -ne 0 ]; then
-            echo "ERROR: Flutter build failed"
-            tail -80 "$LOG"
-            exit 1
+
+          # All retries exhausted
+          echo "BUILD_SUCCEEDED=false" >> $GITHUB_ENV
+          echo "❌ Build failed after $MAX_RETRIES attempts"
+          tail -80 "$LOG"
+          exit 1
+
+      - name: Create GitHub Issue for unfixable error
+        if: failure() && env.AI_ACTION == 'report'
+        run: |
+          TITLE="🤖 Build failed — AI analysis: unfixable error"
+          BODY="## 🤖 AI Build Error Analysis
+
+          The AI analyzed the build failure and determined it **cannot be auto-fixed**. This requires manual developer attention.
+
+          ### AI Explanation
+          ${AI_REPORT:-No AI report available.}
+
+          ---
+          *This issue was auto-created by the nova-apk-builder AI introspection system.*
+          *Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}*"
+
+          # Create issue using GitHub API
+          TITLE_JSON=$(printf '%s' "$TITLE" | jq -Rs '.')
+          BODY_JSON=$(printf '%s' "$BODY" | jq -Rs '.')
+
+          ISSUE_URL=$(curl -sf -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"title\":$TITLE_JSON,\"body\":$BODY_JSON,\"labels\":[\"build-failure\",\"ai-analyzed\"]}" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/issues" | jq -r '.html_url' 2>/dev/null || echo "failed")
+
+          if [ "$ISSUE_URL" != "failed" ] && [ -n "$ISSUE_URL" ]; then
+            echo "📝 Created GitHub issue: $ISSUE_URL"
+            echo "AI_ISSUE_URL=$ISSUE_URL" >> $GITHUB_ENV
+          else
+            echo "⚠️  Could not create GitHub issue (labels may not exist), retrying without labels..."
+            ISSUE_URL=$(curl -sf -X POST \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"title\":$TITLE_JSON,\"body\":$BODY_JSON}" \
+              "${{ github.api_url }}/repos/${{ github.repository }}/issues" | jq -r '.html_url' 2>/dev/null || echo "failed")
+            if [ "$ISSUE_URL" != "failed" ] && [ -n "$ISSUE_URL" ]; then
+              echo "📝 Created GitHub issue: $ISSUE_URL"
+              echo "AI_ISSUE_URL=$ISSUE_URL" >> $GITHUB_ENV
+            fi
           fi
-          find . -name "*.apk" 2>/dev/null
 
       - name: Upload log on failure
         if: failure()
@@ -777,3 +1051,16 @@ jobs:
           echo "- **Java**: ${{ steps.info.outputs.JAVA }}" >> $GITHUB_STEP_SUMMARY
           echo "- **APK**: ${{ steps.app.outputs.CLEAN }}.apk (${{ steps.apk.outputs.SIZE }} bytes)" >> $GITHUB_STEP_SUMMARY
           echo "- **Signing**: ${{ inputs.signing_mode }}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${AI_REPORT:-}" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🤖 AI Analysis" >> $GITHUB_STEP_SUMMARY
+            echo "${AI_REPORT}" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -n "${AI_ISSUE_URL:-}" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📋 **GitHub Issue**: ${AI_ISSUE_URL}" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${BUILD_SUCCEEDED:-}" = "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Build completed successfully" >> $GITHUB_STEP_SUMMARY
+          fi
