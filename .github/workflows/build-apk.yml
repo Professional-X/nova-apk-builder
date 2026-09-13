@@ -606,50 +606,60 @@ jobs:
             CONTEXT_FILES=""
             for F in $(find . -maxdepth 4 \( -name "*.gradle.kts" -o -name "*.gradle" -o -name "*.properties" -o -name "*.toml" \) -not -path "*/.gradle/*" 2>/dev/null | head -15); do
               CONTENT=$(head -80 "$F" 2>/dev/null || true)
-              CONTEXT_FILES="${CONTEXT_FILES}
-
-          --- ${F} ---
-          ${CONTENT}"
+              CONTEXT_FILES="${CONTEXT_FILES}"$'\n'"--- ${F} ---"$'\n'"${CONTENT}"
             done
 
-            # Build AI prompt — detailed for best results with Llama/Groq
-            PROMPT="Analyze this Android/Flutter build failure and determine if it can be auto-fixed.
+            # Build AI prompt using a temp file to avoid YAML/heredoc issues
+            PROMPT_FILE="$RUNNER_TEMP/ai_prompt.txt"
+            python3 -c "
+          import os
+          prompt = '''Analyze this Android/Flutter build failure and determine if it can be auto-fixed.
 
-BUILD ERROR LOG (last 200 lines):
-${ERROR_SECTION}
+          COMMON AUTO-FIXABLE PATTERNS:
+          - Missing or wrong import statements (e.g. GoogleServicesPlugin, FirebasePlugin)
+          - Plugin config blocks that reference unavailable classes
+          - Version mismatches between AGP and Gradle wrapper
+          - compileSdk block syntax that needs conversion to plain integer
+          - Missing google-services.json or wrong package_name in it
+          - Missing keystore files or signing config referencing env vars not set
+          - System.getenv() calls for passwords that have no env vars in CI
+          - Missing .env file for secrets gradle plugin
+          - configuration-cache incompatibility with certain plugins
+          - Kotlin version too old for current AGP
+          - Missing gradlew or wrapper jar files
 
-RELEVANT SOURCE FILES:
-${CONTEXT_FILES}
+          INSTRUCTIONS:
+          If the error is AUTO-FIXABLE (config/build issue, not a real code bug), respond:
+          {\"action\":\"patch\",\"explanation\":\"what was wrong\",\"patches\":[{\"file\":\"path\",\"find\":\"exact text\",\"replace\":\"fixed text\"}]}
 
-PROJECT INFO: Type=${TYPE}, AGP=${{ steps.info.outputs.AGP }}, Gradle=${{ steps.info.outputs.GRADLE_VER }}, Java=${{ steps.info.outputs.JAVA }}
+          Rules for patches:
+          - find must be an EXACT substring from the source files - copy it character-for-character
+          - replace is the corrected version
+          - Multiple patches allowed in the array
 
-COMMON AUTO-FIXABLE PATTERNS:
-- Missing or wrong import statements (e.g. GoogleServicesPlugin, FirebasePlugin)
-- Plugin config blocks that reference unavailable classes (e.g. googleServices { missingGoogleServicesStrategy = ... })
-- Version mismatches between AGP and Gradle wrapper
-- compileSdk block syntax that needs conversion to plain integer
-- Missing google-services.json or wrong package_name in it
-- Missing keystore files or signing config referencing env vars not set
-- System.getenv() calls for passwords that have no env vars in CI
-- Missing .env file for secrets gradle plugin
-- configuration-cache incompatibility with certain plugins
-- Kotlin version too old for current AGP
-- Missing gradlew or wrapper jar files
+          If the error is a REAL CODE BUG (logic error, missing source, API incompatibility), respond:
+          {\"action\":\"report\",\"explanation\":\"clear explanation of what went wrong and what the developer should do\"}
 
-INSTRUCTIONS:
-If the error is AUTO-FIXABLE (config/build issue, not a real code bug), respond:
-{\"action\":\"patch\",\"explanation\":\"what was wrong and what you fixed\",\"patches\":[{\"file\":\"relative/path/to/file\",\"find\":\"exact text from the source file to find\",\"replace\":\"the corrected text\"}]}
+          Respond with ONLY valid JSON.
+          '''
+          with open(os.environ['PROMPT_FILE'], 'w') as f:
+              f.write(prompt)
+          " 2>/dev/null
+            export PROMPT_FILE
 
-Rules for patches:
-- \"find\" must be an EXACT substring from the source files shown above — copy it character-for-character
-- \"replace\" is the corrected version
-- Multiple patches allowed in the array
-- For missing files: use action=patch with find=\"\" and replace=file content, and set \"create\":true
+            # Append dynamic context to the prompt file
+            {
+              echo ""
+              echo "BUILD ERROR LOG (last 200 lines):"
+              echo "${ERROR_SECTION}"
+              echo ""
+              echo "RELEVANT SOURCE FILES:"
+              echo "${CONTEXT_FILES}"
+              echo ""
+              echo "PROJECT INFO: Type=${TYPE}, AGP=${{ steps.info.outputs.AGP }}, Gradle=${{ steps.info.outputs.GRADLE_VER }}, Java=${{ steps.info.outputs.JAVA }}"
+            } >> "$PROMPT_FILE"
 
-If the error is a REAL CODE BUG (logic error, missing source code, API incompatibility needing rewrite, wrong architecture), respond:
-{\"action\":\"report\",\"explanation\":\"clear explanation of what went wrong, why it can't be auto-fixed, and what the developer should do\"}
-
-Respond with ONLY valid JSON."
+            PROMPT=$(cat "$PROMPT_FILE")
 
             echo "📡 Calling AI ($AI_MODEL) to analyze build failure..."
 
@@ -692,17 +702,17 @@ Respond with ONLY valid JSON."
             done
 
             # Extract AI message content
-            AI_CONTENT=$(echo "$AI_RESPONSE" | python3 -c "
+            AI_CONTENT=$(echo "$AI_RESPONSE" | python3 -c '
           import json,sys
           try:
               data = json.load(sys.stdin)
-              if 'error' in data:
-                  print('ERROR: AI API call failed')
+              if "error" in data:
+                  print("ERROR: AI API call failed")
               else:
-                  print(data['choices'][0]['message']['content'])
+                  print(data["choices"][0]["message"]["content"])
           except:
-              print('ERROR: Failed to parse AI response')
-          " 2>/dev/null || echo "ERROR: AI response parse failed")
+              print("ERROR: Failed to parse AI response")
+          ' 2>/dev/null || echo "ERROR: AI response parse failed")
 
             if echo "$AI_CONTENT" | grep -q "^ERROR:"; then
               echo "❌ AI analysis failed: $AI_CONTENT"
@@ -714,21 +724,19 @@ Respond with ONLY valid JSON."
             echo ""
 
             # Parse AI response — extract JSON from possible markdown code blocks
-            AI_JSON=$(echo "$AI_CONTENT" | python3 -c "
+            AI_JSON=$(echo "$AI_CONTENT" | python3 -c '
           import json,sys,re
           text = sys.stdin.read().strip()
-          # Try to extract JSON from markdown code block
-          m = re.search(r'\`\`\`(?:json)?\s*(\{.*?\})\s*\`\`\`', text, re.DOTALL)
+          m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
           if m:
               print(m.group(1))
           else:
-              # Try to find JSON object directly
-              m = re.search(r'\{.*\}', text, re.DOTALL)
+              m = re.search(r"\{.*\}", text, re.DOTALL)
               if m:
                   print(m.group(0))
               else:
-                  print('{}')
-          " 2>/dev/null || echo '{}')
+                  print("{}")
+          ' 2>/dev/null || echo '{}')
 
             ACTION=$(echo "$AI_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('action','unknown'))" 2>/dev/null || echo "unknown")
             EXPLANATION=$(echo "$AI_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('explanation','No explanation'))" 2>/dev/null || echo "No explanation")
@@ -742,27 +750,26 @@ Respond with ONLY valid JSON."
               echo "🔧 Applying $PATCH_COUNT patch(es)..."
 
               # Use Python to apply patches (handles find/replace safely)
-              echo "$AI_JSON" | python3 -c "
+              echo "$AI_JSON" | python3 -c '
           import json, sys
           data = json.load(sys.stdin)
-          for i, p in enumerate(data.get('patches', [])):
-              fpath = p.get('file', '')
-              find_text = p.get('find', '')
-              replace_text = p.get('replace', '')
+          for i, p in enumerate(data.get("patches", [])):
+              fpath = p.get("file", "")
+              find_text = p.get("find", "")
+              replace_text = p.get("replace", "")
               try:
-                  with open(fpath, 'r') as f:
+                  with open(fpath, "r") as f:
                       content = f.read()
                   if find_text in content:
                       content = content.replace(find_text, replace_text, 1)
-                      with open(fpath, 'w') as f:
+                      with open(fpath, "w") as f:
                           f.write(content)
-                      print(f'  ✅ Patch {i+1}: Applied to {fpath}')
+                      print(f"  Patch {i+1}: Applied to {fpath}")
                   else:
-                      print(f'  ⚠️  Patch {i+1}: Find text not found in {fpath}, skipping')
-                      # Try to show what's actually in the file around that area
+                      print(f"  Patch {i+1}: Find text not found in {fpath}, skipping")
               except Exception as e:
-                  print(f'  ❌ Patch {i+1}: Failed on {fpath}: {e}')
-          " 2>/dev/null || echo "  ❌ Patch application failed"
+                  print(f"  Patch {i+1}: Failed on {fpath}: {e}")
+          ' 2>/dev/null || echo "  Patch application failed"
 
               echo ""
               echo "✅ Patches applied — retrying build..."
